@@ -100,8 +100,11 @@ Everything is exported from the top-level `xpoint_cfi` package.
   the CFI string layer (parse / `to_string()` / `Cfi.sort_key()`), no EPUB needed.
 
 **Verification:** `verify_range(book, CfiRange | str, expected_text) -> VerificationResult`
-with fields `ok: bool` and `extracted_text: str`, plus the `normalize_whitespace(s)`
-helper it uses.
+with fields `ok: bool` and `extracted_text: str`. Texts are compared via
+`normalize_for_comparison(s)` (NFC, soft hyphens and zero-width marks dropped, NBSP →
+space, whitespace collapsed), because crengine keeps soft hyphens in its DOM text but
+strips them from exported highlight text; the plain `normalize_whitespace(s)` helper is
+also exported.
 
 **Errors** all derive from `XpointCfiError`: `XPointParseError`, `CfiParseError`,
 `ResolutionError` (a parsed location doesn't resolve against the document),
@@ -119,11 +122,72 @@ helper it uses.
   (text) step; an offset attached to an element step raises `ResolutionError`.
 - Round-trips are identity **modulo `[1]` normalization** of the xpath (`p` ↔ `p[1]`).
 
+## Testing conversions against real books
+
+The repo ships a validation pipeline that checks conversions against **real KOReader
+annotations**: it reads highlights from KOReader's sidecar files, converts every
+xpointer range to a CFI, and verifies the results four ways. Design details live in
+[VALIDATION.md](VALIDATION.md).
+
+### 1. Add books to `test-books/`
+
+KOReader keeps its annotations in a sidecar directory next to each book:
+`<Book name>.sdr/metadata.epub.lua`. Copy the whole `.sdr` directory from your device
+into `test-books/` and put the **matching EPUB inside it**, so each entry looks like:
+
+```text
+test-books/
+  My Book - Author.sdr/
+    My Book - Author.epub        <- the exact EPUB the highlights were made in
+    metadata.epub.lua            <- KOReader sidecar with the annotations
+```
+
+`test-books/` is git-ignored — personal books are never committed. Notes:
+
+- The sidecar must use the modern `annotations` format (KOReader 2024+) and normalized
+  xpointers (`cre_dom_version >= 20200223`); the pipeline reports older formats clearly.
+- The EPUB must be the same file the highlights were made in. The pipeline compares the
+  sidecar's recorded `doc_path` against the EPUB filename and warns loudly on a
+  mismatch (a wrong file otherwise fails every annotation with opaque errors).
+
+### 2. (Optional) install the independent JS referee
+
+The strongest check resolves the generated CFIs with a *separate* implementation
+([epub-cfi-resolver](https://github.com/fread-ink/epub-cfi-resolver) + jsdom in Node)
+and compares the text it extracts against what KOReader recorded:
+
+```bash
+cd validation/js && npm install    # requires node; skipped automatically if absent
+```
+
+### 3. Run
+
+```bash
+uv run python -m validation.run                    # full pipeline, all books
+uv run python -m validation.run --no-js            # Python-only stages
+uv run python -m validation.run path/to/corpus     # a different corpus directory
+uv run pytest -m corpus                            # same thing as a pytest suite
+```
+
+Every highlight goes through four stages:
+
+1. **convert** — `pos0`/`pos1` xpointers → range CFI;
+2. **round-trip** — CFI → xpointers again, compared positionally against the originals;
+3. **self-check** — `verify_range` re-extracts the CFI's text and compares it with the
+   highlight text KOReader stored;
+4. **js** — the independent JS resolver extracts the same range (when installed).
+
+The run prints a per-book table (`conv-ok` / `rt-ok` / `self-ok` / `js-ok`) with a
+detail line for every failure (xpointers, CFI, expected vs. extracted text), writes the
+full report to `validation/build/report.json`, and exits non-zero if anything failed —
+so a problem book is caught just by dropping its `.sdr` into `test-books/` and running
+the pipeline.
+
 ## Development
 
 ```bash
 uv sync                     # install deps + dev tools
-uv run pytest               # tests
+uv run pytest               # unit tests (corpus tests skip without test-books/)
 uv run ruff check .         # lint
 uv run ruff format --check .# formatting
 uv run pyright              # type checking (strict)
