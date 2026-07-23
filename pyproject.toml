@@ -17,6 +17,7 @@ dev = [
     "ruff>=0.8",
     "pyright>=1.1",
     "lxml-stubs>=0.5",
+    "lupa>=2.0",
 ]
 
 [build-system]

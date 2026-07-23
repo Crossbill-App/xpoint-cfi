@@ -6,3 +6,6 @@ dist/
 .ruff_cache/
 
 test-books/
+test-books/
+validation/js/node_modules/
+validation/build/
