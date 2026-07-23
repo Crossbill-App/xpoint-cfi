@@ -62,8 +62,14 @@ def _lua_to_py(value: object) -> object:
     return {k: _lua_to_py(value[k]) for k in keys}  # pyright: ignore[reportIndexIssue, reportUnknownArgumentType]
 
 
-def _as_dict(value: object) -> dict[object, object]:
+def as_dict(value: object) -> dict[object, object]:
+    """Narrow an untyped value to a dict, or an empty dict."""
     return cast("dict[object, object]", value) if isinstance(value, dict) else {}
+
+
+def as_list(value: object) -> list[object]:
+    """Narrow an untyped value to a list, or an empty list."""
+    return cast("list[object]", value) if isinstance(value, list) else []
 
 
 def _opt_str(value: object) -> str | None:
@@ -83,7 +89,7 @@ def parse_sidecar(path: Path) -> SidecarData:
     """
     content = path.read_text(encoding="utf-8")
     lua = LuaRuntime(unpack_returned_tuples=False)  # pyright: ignore[reportUnknownVariableType]
-    root = _as_dict(_lua_to_py(lua.execute(content)))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    root = as_dict(_lua_to_py(lua.execute(content)))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
     raw_annotations = root.get("annotations")
     if not isinstance(raw_annotations, list):
@@ -94,7 +100,7 @@ def parse_sidecar(path: Path) -> SidecarData:
 
     annotations: list[Annotation] = []
     for entry in cast("list[object]", raw_annotations):
-        fields = _as_dict(entry)
+        fields = as_dict(entry)
         pos0 = fields.get("pos0")
         pos1 = fields.get("pos1")
         if not isinstance(pos0, str) or not isinstance(pos1, str):
@@ -110,7 +116,7 @@ def parse_sidecar(path: Path) -> SidecarData:
             )
         )
 
-    doc_props = _as_dict(root.get("doc_props"))
+    doc_props = as_dict(root.get("doc_props"))
     return SidecarData(
         title=_opt_str(doc_props.get("title")),
         cre_dom_version=_opt_int(root.get("cre_dom_version")),

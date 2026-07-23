@@ -82,8 +82,13 @@ function makeResolverContext(root) {
   return { opfDoc, fetchCB, reset };
 }
 
-// Ordered list of every text node in the document (document order).
-function textNodesOf(doc) {
+// Ordered list of every text node in the document (document order), with a
+// node -> index map. Cached per document: many jobs hit the same chapter.
+const textIndexByDoc = new WeakMap();
+
+function textIndexOf(doc) {
+  let entry = textIndexByDoc.get(doc);
+  if (entry) return entry;
   const walker = doc.createTreeWalker(
     doc.documentElement,
     doc.defaultView.NodeFilter.SHOW_TEXT,
@@ -94,7 +99,9 @@ function textNodesOf(doc) {
     nodes.push(n);
     n = walker.nextNode();
   }
-  return nodes;
+  entry = { nodes, indexOf: new Map(nodes.map((node, i) => [node, i])) };
+  textIndexByDoc.set(doc, entry);
+  return entry;
 }
 
 function isTextNode(node) {
@@ -104,12 +111,13 @@ function isTextNode(node) {
 // Normalize a resolved boundary {node, offset?, relativeToNode?} to a concrete
 // (index-into-textNodes, offset) pair. `isStart` selects the descendant/adjacent
 // text node to use when the boundary landed on an element.
-function boundaryToTextPos(loc, textNodes, isStart) {
+function boundaryToTextPos(loc, textIndex, isStart) {
+  const textNodes = textIndex.nodes;
   const offset = loc.offset || 0;
   const node = loc.node;
 
   if (isTextNode(node)) {
-    const idx = textNodes.indexOf(node);
+    const idx = textIndex.indexOf.get(node) ?? -1;
     if (idx < 0) return null;
     if (loc.relativeToNode === 'before') return { idx, offset: 0 };
     if (loc.relativeToNode === 'after') return { idx, offset: node.data.length };
@@ -141,10 +149,11 @@ function boundaryToTextPos(loc, textNodes, isStart) {
 // UTF-16 code units, which is exactly how JS strings index, so we slice directly.
 function extractRangeText(from, to) {
   const doc = from.node.ownerDocument;
-  const textNodes = textNodesOf(doc);
+  const textIndex = textIndexOf(doc);
+  const textNodes = textIndex.nodes;
 
-  const start = boundaryToTextPos(from, textNodes, true);
-  const end = boundaryToTextPos(to, textNodes, false);
+  const start = boundaryToTextPos(from, textIndex, true);
+  const end = boundaryToTextPos(to, textIndex, false);
   if (!start || !end) {
     throw new Error('could not map CFI boundary to a text node');
   }

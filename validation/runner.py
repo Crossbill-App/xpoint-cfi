@@ -23,7 +23,6 @@ import unicodedata
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import cast
 
 from xpoint_cfi import (
     EpubMap,
@@ -35,7 +34,7 @@ from xpoint_cfi import (
 )
 from xpoint_cfi.xpoint import XPoint, normalize_xpath
 
-from .sidecar import parse_sidecar
+from .sidecar import as_dict, as_list, parse_sidecar
 
 __all__ = [
     "AnnotationResult",
@@ -110,10 +109,6 @@ class AnnotationResult:
         )
 
 
-def _new_results() -> list[AnnotationResult]:
-    return []
-
-
 @dataclass
 class BookReport:
     """Aggregate counts and per-annotation detail for one book."""
@@ -122,7 +117,7 @@ class BookReport:
     title: str | None
     cre_dom_version: int | None
     epub_path: str
-    results: list[AnnotationResult] = field(default_factory=_new_results)
+    results: list[AnnotationResult] = field(default_factory=list[AnnotationResult])
     js_ran: bool = False
     js_skip_reason: str | None = None
     pairing_warning: str | None = None
@@ -400,23 +395,15 @@ def _extract_epub(epub_path: Path, dest: Path) -> None:
         archive.extractall(dest)
 
 
-def _as_dict(value: object) -> dict[object, object]:
-    return cast("dict[object, object]", value) if isinstance(value, dict) else {}
-
-
-def _as_list(value: object) -> list[object]:
-    return cast("list[object]", value) if isinstance(value, list) else []
-
-
 def _read_js_results(results_path: Path, slug: str) -> dict[int, dict[object, object]]:
     payload: object = json.loads(results_path.read_text(encoding="utf-8"))
     out: dict[int, dict[object, object]] = {}
-    for entry in _as_list(_as_dict(payload).get("books")):
-        entry_dict = _as_dict(entry)
+    for entry in as_list(as_dict(payload).get("books")):
+        entry_dict = as_dict(entry)
         if entry_dict.get("id") != slug:
             continue
-        for row in _as_list(entry_dict.get("results")):
-            row_dict = _as_dict(row)
+        for row in as_list(entry_dict.get("results")):
+            row_dict = as_dict(row)
             index = row_dict.get("index")
             if isinstance(index, int):
                 out[index] = row_dict
