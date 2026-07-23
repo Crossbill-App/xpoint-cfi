@@ -53,6 +53,13 @@ def xpoint_to_cfi(book: EpubMap, xpoint: XPoint) -> Cfi:
     the ``!`` indirection, a document local path of element steps optionally terminated
     by an odd text step and a UTF-16 character offset.
 
+    An xpointer with a text position (e.g. ``.../p[5]/img.0``) that targets an element
+    crengine keeps no countable text node for degrades to an **element-boundary** CFI
+    (element steps only, no text step or offset), but only in its default
+    ``text()[1].0`` shape; any other text-node index or non-zero offset on a textless
+    element is an error. Such a point round-trips back as an element-boundary xpoint
+    (``has_text_position=False``); the two are semantically equivalent for KOReader.
+
     Raises:
         ResolutionError: if the spine index, element xpath, or text position does not
             resolve against the book.
@@ -64,7 +71,13 @@ def xpoint_to_cfi(book: EpubMap, xpoint: XPoint) -> Cfi:
     node = book.doc(xpoint.doc_fragment_index)
     elem = node.element_by_xpath(normalize_xpath(xpoint.xpath))
     element_steps = node.cfi_steps_for_element(elem)
-    if xpoint.has_text_position:
+    textless_boundary = (
+        xpoint.has_text_position
+        and not node.has_countable_text(elem)
+        and xpoint.text_node_index == 1
+        and xpoint.char_offset == 0
+    )
+    if xpoint.has_text_position and not textless_boundary:
         odd_index, utf16_offset = node.text_position_to_cfi(
             elem, xpoint.text_node_index, xpoint.char_offset
         )

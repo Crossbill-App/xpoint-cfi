@@ -19,6 +19,7 @@ The package path is ``/6`` (the spine element step) then ``/2[ref1]`` (spine ite
 from __future__ import annotations
 
 import pytest
+from conftest import build_epub, xhtml_doc
 
 from xpoint_cfi import (
     EpubMap,
@@ -237,3 +238,50 @@ def test_element_boundary_end_in_range(book: EpubMap) -> None:
         "/body/DocFragment[2]/body/h1[1]/text().0",
         "/body/DocFragment[2]/body/p[1]/a[1]",
     )
+
+
+# --------------------------------------------------------------------------------------
+# img.0 style endpoints: has_text_position but zero countable text -> element boundary
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def img_book() -> EpubMap:
+    # body: <p>text</p><p><img/></p> -> the img paragraph is body child 2 (/4), the <img>
+    # is its child 1 (/2). An `.../p[2]/img.0` xpoint has a text position but the element
+    # has no countable text node.
+    body = '<p>Some text</p><p><img src="x.png"/></p>'
+    return EpubMap.from_bytes(build_epub({"a.xhtml": xhtml_doc("A", body)}))
+
+
+def test_img_endpoint_converts_to_element_boundary_cfi(img_book: EpubMap) -> None:
+    xp = "/body/DocFragment[1]/body/p[2]/img.0"
+    # Element steps only: /4 (body) /4 (p[2]) /2 (img). No text step, no offset.
+    assert xpoint_to_cfi_string(img_book, xp) == "epubcfi(/6/2[ref1]!/4/4/2)"
+
+
+def test_img_endpoint_reverse_yields_element_boundary_xpoint(img_book: EpubMap) -> None:
+    cfi = "epubcfi(/6/2[ref1]!/4/4/2)"
+    # Round-trips back as an element-boundary xpoint (has_text_position=False).
+    assert cfi_to_xpoint_string(img_book, cfi) == "/body/DocFragment[1]/body/p[2]/img[1]"
+
+
+def test_range_ending_on_img_endpoint_factors(img_book: EpubMap) -> None:
+    start = "/body/DocFragment[1]/body/p[1]/text().0"
+    end = "/body/DocFragment[1]/body/p[2]/img.0"
+    cfi = xpoint_range_to_cfi_string(img_book, start, end)
+    _assert_parseable(cfi)
+    # The end is an element boundary (/4/2), the start a text position under p[1] (/2..).
+    assert cfi == "epubcfi(/6/2[ref1]!/4,/2/1:0,/4/2)"
+    back = cfi_to_xpoint_range_strings(img_book, cfi)
+    assert back == (
+        "/body/DocFragment[1]/body/p[1]/text().0",
+        "/body/DocFragment[1]/body/p[2]/img[1]",
+    )
+
+
+def test_img_endpoint_with_nonzero_offset_still_errors(img_book: EpubMap) -> None:
+    # Only the default text()[1].0 shape degrades; a non-zero offset on a textless
+    # element remains an error.
+    with pytest.raises(ResolutionError):
+        xpoint_to_cfi_string(img_book, "/body/DocFragment[1]/body/p[2]/img.5")
