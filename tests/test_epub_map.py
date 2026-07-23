@@ -537,6 +537,31 @@ def test_single_space_chunk_is_not_counted() -> None:
     assert odd == 3
 
 
+def test_medial_whitespace_only_chunks_are_counted() -> None:
+    # Corpus-verified (DDD Distilled): crengine keeps whitespace-only text nodes BETWEEN
+    # element children — only the leading one is dropped. Here gaps are:
+    #   1: "intro " (countable), 3: "\n " (medial ws-only, KEPT), 5: " tail" (countable)
+    # so crengine's text()[2] is the "\n " node and text()[3] is " tail" at odd index 5.
+    nm = _doc_from_body("<p>intro <a>x</a>\n <em>y</em> tail</p>")
+    p = nm.element_by_xpath(normalize_xpath("/body/p"))
+    assert nm.text_position_to_cfi(p, 1, 0) == (1, 0)
+    assert nm.text_position_to_cfi(p, 2, 0) == (3, 0)
+    assert nm.text_position_to_cfi(p, 3, 1) == (5, 1)
+    # Reverse counting matches: odd index 5 is the 3rd crengine text node.
+    assert nm.cfi_to_text_position(p, 5, 1) == (3, 1)
+    assert nm.cfi_to_text_position(p, 3, 0) == (2, 0)
+
+
+def test_leading_and_medial_whitespace_rule_interaction() -> None:
+    # Leading ws-only gap dropped, medial ws-only gap kept: text()[1] is the tail after
+    # the first element, text()[2] the medial "\n", text()[3] the final tail.
+    nm = _doc_from_body("<p>\n<span>a</span>mid<span>b</span>\n<span>c</span>end</p>")
+    p = nm.element_by_xpath(normalize_xpath("/body/p"))
+    assert nm.text_position_to_cfi(p, 1, 0) == (3, 0)  # "mid"
+    assert nm.text_position_to_cfi(p, 2, 0) == (5, 0)  # medial "\n"
+    assert nm.text_position_to_cfi(p, 3, 0) == (7, 0)  # "end"
+
+
 def test_double_space_offset_maps_collapsed_to_raw_utf16() -> None:
     # Raw "a  b c" (double space after 'a'); collapsed is "a b c". A KOReader offset is
     # in collapsed space: collapsed index 2 is 'b', whose raw code-point index is 3, so

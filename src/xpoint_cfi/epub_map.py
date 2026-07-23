@@ -315,9 +315,22 @@ class NodeMap:
         result.append(Chunk(odd_index=2 * seen_elements + 1, parts=tuple(current)))
         return tuple(result)
 
+    @staticmethod
+    def _crengine_counts(chunk: Chunk) -> bool:
+        """Return ``True`` when crengine keeps this chunk as a text node.
+
+        Corpus-verified rule: a **leading** whitespace-only text node (the gap before
+        the first element child) is dropped by crengine, while **medial/trailing**
+        whitespace-only text nodes between element children are kept. Truly empty gaps
+        hold no text node at all and never count.
+        """
+        if not chunk.text:
+            return False
+        return is_countable(chunk.text) or chunk.odd_index > 1
+
     def _countable_chunks(self, elem: _Element) -> tuple[Chunk, ...]:
-        """Return the chunks crengine keeps as text nodes (at least one non-ws char)."""
-        return tuple(chunk for chunk in self.chunks(elem) if is_countable(chunk.text))
+        """Return the chunks crengine keeps as text nodes (see :meth:`_crengine_counts`)."""
+        return tuple(chunk for chunk in self.chunks(elem) if self._crengine_counts(chunk))
 
     def has_countable_text(self, elem: _Element) -> bool:
         """Return ``True`` when ``elem`` has at least one crengine-countable text chunk.
@@ -326,7 +339,7 @@ class NodeMap:
         can address; an xpointer's ``text()``/``.offset`` on such an element degrades to
         an element boundary. Public so converters need not reach into chunk internals.
         """
-        return any(is_countable(chunk.text) for chunk in self.chunks(elem))
+        return any(self._crengine_counts(chunk) for chunk in self.chunks(elem))
 
     @staticmethod
     def _in_pre(elem: _Element) -> bool:
@@ -408,13 +421,13 @@ class NodeMap:
                 f"/{odd_index}", f"gap index out of range (element has {len(all_chunks)} gaps)"
             )
         preceding_countable = sum(
-            1 for c in all_chunks if is_countable(c.text) and c.odd_index <= odd_index
+            1 for c in all_chunks if self._crengine_counts(c) and c.odd_index <= odd_index
         )
-        if not is_countable(chunk.text):
+        if not self._crengine_counts(chunk):
             if utf16_offset != 0:
                 raise ResolutionError(
                     f"/{odd_index}:{utf16_offset}",
-                    "empty or whitespace-only text chunk addressed with a non-zero offset",
+                    "empty or leading whitespace-only text chunk addressed with a non-zero offset",
                 )
             return max(preceding_countable, 1), 0
         raw_cp = utf16_to_cp(chunk.text, utf16_offset)
