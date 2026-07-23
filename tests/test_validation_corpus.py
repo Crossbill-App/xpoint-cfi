@@ -34,10 +34,19 @@ def corpus_build_dir() -> Path:
 def test_corpus_book(book: BookUnderTest, corpus_build_dir: Path) -> None:
     report = validate_book(book, corpus_build_dir, run_js=js_available())
 
+    assert report.pairing_warning is None, report.pairing_warning
     assert report.conversion_errors == 0, (
         f"{report.conversion_errors} conversion error(s): "
         + "; ".join(
             f"#{f.index} {f.conversion_error}" for f in report.failures if f.conversion_error
+        )
+    )
+    assert report.roundtrip_fail == 0, (
+        f"{report.roundtrip_fail} round-trip failure(s): "
+        + "; ".join(
+            f"#{f.index} {f.roundtrip_detail}"
+            for f in report.failures
+            if f.roundtrip_status == "fail"
         )
     )
     assert report.self_check_fail == 0, (

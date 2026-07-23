@@ -28,10 +28,12 @@ from typing import cast
 from xpoint_cfi import (
     EpubMap,
     XpointCfiError,
+    cfi_to_xpoint_range_strings,
     normalize_whitespace,
     verify_range,
     xpoint_range_to_cfi_string,
 )
+from xpoint_cfi.xpoint import XPoint, normalize_xpath
 
 from .sidecar import parse_sidecar
 
@@ -88,6 +90,8 @@ class AnnotationResult:
     cfi: str | None
     conversion_status: str  # "ok" | "conversion-error"
     conversion_error: str | None = None
+    roundtrip_status: str | None = None  # "pass" | "fail" | None (not attempted)
+    roundtrip_detail: str | None = None  # populated on round-trip failure
     self_check_status: str | None = None  # "pass" | "fail" | None (not attempted)
     extracted_text: str | None = None  # populated on self-check failure/error
     js_status: str | None = None  # "ok" | "mismatch" | "error" | None (not attempted)
@@ -100,6 +104,7 @@ class AnnotationResult:
         """True when any attempted stage did not succeed."""
         return (
             self.conversion_status != "ok"
+            or self.roundtrip_status == "fail"
             or self.self_check_status == "fail"
             or self.js_status in ("mismatch", "error")
         )
@@ -120,6 +125,7 @@ class BookReport:
     results: list[AnnotationResult] = field(default_factory=_new_results)
     js_ran: bool = False
     js_skip_reason: str | None = None
+    pairing_warning: str | None = None
 
     @property
     def total(self) -> int:
@@ -132,6 +138,14 @@ class BookReport:
     @property
     def conversion_errors(self) -> int:
         return sum(1 for r in self.results if r.conversion_status != "ok")
+
+    @property
+    def roundtrip_ok(self) -> int:
+        return sum(1 for r in self.results if r.roundtrip_status == "pass")
+
+    @property
+    def roundtrip_fail(self) -> int:
+        return sum(1 for r in self.results if r.roundtrip_status == "fail")
 
     @property
     def self_check_ok(self) -> int:
@@ -160,6 +174,39 @@ class BookReport:
     @property
     def any_failure(self) -> bool:
         return any(r.failed for r in self.results)
+
+
+def _xpoint_equivalence(original: str, roundtripped: str) -> str | None:
+    """Return ``None`` when the round-tripped xpointer is equivalent to the original.
+
+    Equivalence is positional: same spine fragment, same element path modulo implicit
+    ``[1]`` indices, same text node and collapsed-space offset. One asymmetry is
+    accepted by design: an original with a text position on a textless element (the
+    ``img.0`` shape, ``text()[1].0``) degrades to an element-boundary xpointer.
+
+    Returns a human-readable difference description otherwise.
+    """
+    orig = XPoint.parse(original)
+    rt = XPoint.parse(roundtripped)
+    if orig.doc_fragment_index != rt.doc_fragment_index:
+        return f"fragment {orig.doc_fragment_index} != {rt.doc_fragment_index}"
+    if normalize_xpath(orig.xpath) != normalize_xpath(rt.xpath):
+        return f"xpath {orig.xpath!r} != {rt.xpath!r}"
+    if orig.has_text_position != rt.has_text_position:
+        textless_degrade = (
+            orig.has_text_position
+            and not rt.has_text_position
+            and orig.text_node_index == 1
+            and orig.char_offset == 0
+        )
+        if textless_degrade:
+            return None
+        return f"text-position presence differs ({original!r} vs {roundtripped!r})"
+    if orig.text_node_index != rt.text_node_index:
+        return f"text node {orig.text_node_index} != {rt.text_node_index}"
+    if orig.char_offset != rt.char_offset:
+        return f"offset {orig.char_offset} != {rt.char_offset}"
+    return None
 
 
 def _slugify(name: str) -> str:
@@ -217,6 +264,14 @@ def validate_book(book: BookUnderTest, build_dir: Path, *, run_js: bool) -> Book
         epub_path=str(book.epub_path),
     )
 
+    if sidecar.doc_path is not None:
+        sidecar_basename = sidecar.doc_path.rsplit("/", 1)[-1]
+        if sidecar_basename != book.epub_path.name:
+            report.pairing_warning = (
+                f"sidecar was created for {sidecar_basename!r} but the folder contains "
+                f"{book.epub_path.name!r} — xpointers will not resolve against this EPUB"
+            )
+
     epub_map = EpubMap.from_path(book.epub_path)
 
     for index, ann in enumerate(sidecar.annotations):
@@ -235,6 +290,20 @@ def validate_book(book: BookUnderTest, build_dir: Path, *, run_js: bool) -> Book
             result.conversion_error = f"{type(exc).__name__}: {exc}"
             report.results.append(result)
             continue
+
+        try:
+            rt0, rt1 = cfi_to_xpoint_range_strings(epub_map, result.cfi)
+            diff0 = _xpoint_equivalence(ann.pos0, rt0)
+            diff1 = _xpoint_equivalence(ann.pos1, rt1)
+            if diff0 is None and diff1 is None:
+                result.roundtrip_status = "pass"
+            else:
+                result.roundtrip_status = "fail"
+                details = [d for d in (diff0 and f"start: {diff0}", diff1 and f"end: {diff1}") if d]
+                result.roundtrip_detail = "; ".join(details) + f" (got {rt0!r} -> {rt1!r})"
+        except XpointCfiError as exc:
+            result.roundtrip_status = "fail"
+            result.roundtrip_detail = f"<{type(exc).__name__}: {exc}>"
 
         try:
             verification = verify_range(epub_map, result.cfi, expected_text=ann.text)
@@ -367,10 +436,13 @@ def write_report(reports: list[BookReport], path: Path) -> None:
                 "total": r.total,
                 "conversion_ok": r.conversion_ok,
                 "conversion_errors": r.conversion_errors,
+                "roundtrip_ok": r.roundtrip_ok,
+                "roundtrip_fail": r.roundtrip_fail,
                 "self_check_ok": r.self_check_ok,
                 "self_check_fail": r.self_check_fail,
                 "js_ran": r.js_ran,
                 "js_skip_reason": r.js_skip_reason,
+                "pairing_warning": r.pairing_warning,
                 "js_ok": r.js_ok,
                 "js_mismatch": r.js_mismatch,
                 "js_error": r.js_error,
@@ -389,7 +461,7 @@ def _truncate(text: str, limit: int = 120) -> str:
 
 def print_summary(reports: list[BookReport]) -> None:
     """Print an aligned per-book table plus a detail line for each failure."""
-    headers = ("book", "annots", "conv-ok", "self-ok", "js-ok", "failures")
+    headers = ("book", "annots", "conv-ok", "rt-ok", "self-ok", "js-ok", "failures")
     rows: list[tuple[str, ...]] = []
     for r in reports:
         js_cell = str(r.js_ok) if r.js_ran else "skip"
@@ -398,6 +470,7 @@ def print_summary(reports: list[BookReport]) -> None:
                 r.slug,
                 str(r.total),
                 f"{r.conversion_ok}/{r.total}",
+                f"{r.roundtrip_ok}/{r.conversion_ok}",
                 f"{r.self_check_ok}/{r.conversion_ok}",
                 js_cell,
                 str(len(r.failures)),
@@ -418,6 +491,8 @@ def print_summary(reports: list[BookReport]) -> None:
         print(fmt(row))
 
     for r in reports:
+        if r.pairing_warning:
+            print(f"\n[{r.slug}] WARNING: {r.pairing_warning}")
         if r.js_skip_reason and not r.js_ran:
             print(f"\n[{r.slug}] JS step skipped: {r.js_skip_reason}")
         if not r.failures:
@@ -429,6 +504,8 @@ def print_summary(reports: list[BookReport]) -> None:
                 print(f"      conversion-error: {a.conversion_error}")
                 continue
             print(f"      cfi: {a.cfi}")
+            if a.roundtrip_status == "fail":
+                print(f"      round-trip: {a.roundtrip_detail}")
             if a.self_check_status == "fail":
                 print(f"      self-check expected: {_truncate(a.expected_text)}")
                 print(f"      self-check extracted: {_truncate(a.extracted_text or '')}")

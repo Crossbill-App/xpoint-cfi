@@ -36,6 +36,7 @@ class SidecarData:
 
     title: str | None
     cre_dom_version: int | None
+    doc_path: str | None
     annotations: list[Annotation]
 
 
@@ -113,5 +114,6 @@ def parse_sidecar(path: Path) -> SidecarData:
     return SidecarData(
         title=_opt_str(doc_props.get("title")),
         cre_dom_version=_opt_int(root.get("cre_dom_version")),
+        doc_path=_opt_str(root.get("doc_path")),
         annotations=annotations,
     )
