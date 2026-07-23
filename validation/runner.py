@@ -19,7 +19,6 @@ import json
 import re
 import shutil
 import subprocess
-import unicodedata
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -28,6 +27,7 @@ from xpoint_cfi import (
     EpubMap,
     XpointCfiError,
     cfi_to_xpoint_range_strings,
+    normalize_for_comparison,
     normalize_whitespace,
     verify_range,
     xpoint_range_to_cfi_string,
@@ -50,24 +50,6 @@ __all__ = [
 
 _RESOLVE_MJS = Path(__file__).resolve().parent / "js" / "resolve.mjs"
 _JS_NODE_MODULES = Path(__file__).resolve().parent / "js" / "node_modules"
-
-# Characters dropped entirely before comparison: soft hyphen and zero-width marks.
-_ZERO_WIDTH = {"\u00ad", "\u200b", "\u200c", "\u200d", "\ufeff"}
-_NBSP = "\u00a0"
-
-
-def normalize_for_comparison(s: str) -> str:
-    """Normalize text so the two engines' cosmetic differences don't cause mismatches.
-
-    NFC-normalize, drop soft hyphens and zero-width characters, turn no-break spaces into
-    ordinary spaces, then collapse whitespace runs and strip. Extends the library's
-    :func:`normalize_whitespace` (which only does the final collapse) with the Unicode
-    folding the cross-engine comparison needs.
-    """
-    s = unicodedata.normalize("NFC", s)
-    s = s.replace(_NBSP, " ")
-    s = "".join(ch for ch in s if ch not in _ZERO_WIDTH)
-    return normalize_whitespace(s)
 
 
 @dataclass(frozen=True)

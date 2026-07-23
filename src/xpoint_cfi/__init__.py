@@ -31,7 +31,12 @@ from .exceptions import (
     XpointCfiError,
     XPointParseError,
 )
-from .verify import VerificationResult, normalize_whitespace, verify_range
+from .verify import (
+    VerificationResult,
+    normalize_for_comparison,
+    normalize_whitespace,
+    verify_range,
+)
 from .xpoint import XPoint, XPointRange, normalize_xpath
 
 __all__ = [
@@ -55,6 +60,7 @@ __all__ = [
     "cfi_to_xpoint",
     "cfi_to_xpoint_range_strings",
     "cfi_to_xpoint_string",
+    "normalize_for_comparison",
     "normalize_whitespace",
     "normalize_xpath",
     "parse_cfi",

@@ -9,6 +9,7 @@ signal that the conversion (or the stored range) is untrustworthy, not a hard er
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -26,7 +27,12 @@ if TYPE_CHECKING:
 
 _Element = etree._Element  # pyright: ignore[reportPrivateUsage]
 
-__all__ = ["VerificationResult", "normalize_whitespace", "verify_range"]
+__all__ = [
+    "VerificationResult",
+    "normalize_for_comparison",
+    "normalize_whitespace",
+    "verify_range",
+]
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,24 @@ class VerificationResult:
 def normalize_whitespace(s: str) -> str:
     """Collapse every run of whitespace to a single space and strip the ends."""
     return " ".join(s.split())
+
+
+# Characters dropped entirely before comparison: soft hyphen and zero-width marks.
+_ZERO_WIDTH = {"\u00ad", "\u200b", "\u200c", "\u200d", "\ufeff"}
+_NBSP = "\u00a0"
+
+
+def normalize_for_comparison(s: str) -> str:
+    """Normalize text so cosmetic engine differences don't cause mismatches.
+
+    NFC-normalize, drop soft hyphens and zero-width characters (crengine keeps soft
+    hyphens in its DOM text but strips them from exported highlight text), turn no-break
+    spaces into ordinary spaces, then collapse whitespace runs and strip.
+    """
+    s = unicodedata.normalize("NFC", s)
+    s = s.replace(_NBSP, " ")
+    s = "".join(ch for ch in s if ch not in _ZERO_WIDTH)
+    return normalize_whitespace(s)
 
 
 def verify_range(book: EpubMap, rng: CfiRange | str, expected_text: str) -> VerificationResult:
@@ -68,7 +92,7 @@ def verify_range(book: EpubMap, rng: CfiRange | str, expected_text: str) -> Veri
     xpoint_range = cfi_range_to_xpoint_range(book, rng)
 
     extracted = _extract_between(book, xpoint_range.start, xpoint_range.end)
-    ok = normalize_whitespace(extracted) == normalize_whitespace(expected_text)
+    ok = normalize_for_comparison(extracted) == normalize_for_comparison(expected_text)
     return VerificationResult(ok=ok, extracted_text=extracted)
 
 

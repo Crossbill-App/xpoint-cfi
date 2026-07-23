@@ -463,7 +463,7 @@ def test_extract_within_one_element(two_para: NodeMap) -> None:
 
 def test_extract_across_elements(two_para: NodeMap) -> None:
     p1, p2 = _paras(two_para)
-    assert two_para.extract_text((p1, 1, 6), (p2, 1, 6)) == "worldSecond"
+    assert two_para.extract_text((p1, 1, 6), (p2, 1, 6)) == "world\nSecond"
 
 
 def test_extract_none_start(two_para: NodeMap) -> None:
@@ -477,7 +477,7 @@ def test_extract_none_end(two_para: NodeMap) -> None:
 
 
 def test_extract_none_both_is_whole_body(two_para: NodeMap) -> None:
-    assert two_para.extract_text(None, None) == "Hello worldSecond para"
+    assert two_para.extract_text(None, None) == "Hello world\nSecond para"
 
 
 def test_extract_mid_text_offsets(two_para: NodeMap) -> None:

@@ -82,6 +82,26 @@ function makeResolverContext(root) {
   return { opfDoc, fetchCB, reset };
 }
 
+// Block-level tags: extraction inserts "\n" when consecutive text nodes belong to
+// different block containers, matching KOReader's highlight export (and the Python
+// side's extraction convention).
+const BLOCK_TAGS = new Set(
+  ('address article aside blockquote body dd div dl dt fieldset figcaption figure ' +
+    'footer h1 h2 h3 h4 h5 h6 header hr li main nav ol p pre section table td th tr ' +
+    'ul').split(' '),
+);
+
+function blockAncestor(node) {
+  let el = node.parentNode;
+  let last = el;
+  while (el && el.nodeType === 1) {
+    if (BLOCK_TAGS.has(el.localName)) return el;
+    last = el;
+    el = el.parentNode;
+  }
+  return last;
+}
+
 // Ordered list of every text node in the document (document order), with a
 // node -> index map. Cached per document: many jobs hit the same chapter.
 const textIndexByDoc = new WeakMap();
@@ -167,10 +187,13 @@ function extractRangeText(from, to) {
   }
 
   let out = textNodes[start.idx].data.slice(start.offset);
-  for (let i = start.idx + 1; i < end.idx; i++) {
-    out += textNodes[i].data;
+  let prevBlock = blockAncestor(textNodes[start.idx]);
+  for (let i = start.idx + 1; i <= end.idx; i++) {
+    const block = blockAncestor(textNodes[i]);
+    if (block !== prevBlock) out += '\n';
+    prevBlock = block;
+    out += i === end.idx ? textNodes[i].data.slice(0, end.offset) : textNodes[i].data;
   }
-  out += textNodes[end.idx].data.slice(0, end.offset);
   return out;
 }
 

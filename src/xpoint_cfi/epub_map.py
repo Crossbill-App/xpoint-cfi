@@ -46,6 +46,52 @@ _Element = etree._Element  # pyright: ignore[reportPrivateUsage]
 
 _CONTAINER_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
 
+# Block-level HTML tags: text extraction inserts a "\n" separator when consecutive text
+# nodes belong to different block containers (matching KOReader's highlight export).
+_BLOCK_TAGS = frozenset(
+    {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "body",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "td",
+        "th",
+        "tr",
+        "ul",
+    }
+)
+
+
+def _flow_parent(node: _Element) -> _Element:
+    """Return the element whose text flow a ``tail`` text belongs to."""
+    parent = node.getparent()
+    return parent if parent is not None else node
+
 
 def _local(tag: str) -> str:
     """Return the local name of a possibly namespace-qualified ``{uri}name`` tag."""
@@ -190,6 +236,7 @@ class NodeMap:
     def __init__(self, root: _Element) -> None:
         self._root = root
         self._chunk_cache: dict[int, tuple[Chunk, ...]] = {}
+        self._block_cache: dict[int, _Element] = {}
         self._text_index: _TextIndex | None = None
 
     # -- element addressing ------------------------------------------------------------
@@ -478,9 +525,20 @@ class NodeMap:
         if self._text_index is None:
             locations = tuple(_iter_text_locations(self._find_body()))
             cumulative: list[int] = []
+            pieces: list[str] = []
             running = 0
-            for _, _, text in locations:
+            previous_block: _Element | None = None
+            for node, attr, text in locations:
+                block = self._block_ancestor(node if attr == "text" else _flow_parent(node))
+                if previous_block is not None and block is not previous_block:
+                    # KOReader separates block elements with a newline when exporting
+                    # highlight text; minified XHTML has no whitespace between blocks,
+                    # so extraction must add the separator itself.
+                    pieces.append("\n")
+                    running += 1
+                previous_block = block
                 cumulative.append(running)
+                pieces.append(text)
                 running += len(text)
             self._text_index = _TextIndex(
                 locations=locations,
@@ -489,9 +547,28 @@ class NodeMap:
                     (id(node), attr): cum
                     for (node, attr, _), cum in zip(locations, cumulative, strict=True)
                 },
-                full="".join(text for _, _, text in locations),
+                full="".join(pieces),
             )
         return self._text_index
+
+    def _block_ancestor(self, elem: _Element) -> _Element:
+        """Return ``elem``'s nearest ancestor-or-self with a block-level tag.
+
+        Cached per element; falls back to the document element when no block tag is
+        found (foreign or fully-inline markup).
+        """
+        cached = self._block_cache.get(id(elem))
+        if cached is not None:
+            return cached
+        node: _Element | None = elem
+        result = self._root
+        while node is not None:
+            if _is_element(node) and _local_name(node) in _BLOCK_TAGS:
+                result = node
+                break
+            node = node.getparent()
+        self._block_cache[id(elem)] = result
+        return result
 
     def _absolute_offset(self, position: tuple[_Element, int, int], index: _TextIndex) -> int:
         elem, odd_index, utf16_offset = position

@@ -50,15 +50,17 @@ def test_same_element_range_matches(book: EpubMap) -> None:
 
 
 def test_cross_element_range_matches(book: EpubMap) -> None:
-    # From start of p[1] to "Second" (6 chars) of p[2]. No inter-paragraph whitespace in
-    # the source, so the streams abut.
+    # From start of p[1] to "Second" (6 chars) of p[2]. The source has no whitespace
+    # between the paragraphs; extraction inserts the block separator KOReader uses, so
+    # the words stay separated exactly as KOReader's exported text has them.
     cfi = xpoint_range_to_cfi_string(
         book,
         "/body/DocFragment[1]/body/p[1]/text().0",
         "/body/DocFragment[1]/body/p[2]/text().6",
     )
-    result = verify_range(book, cfi, "Hello brave new world.Second")
+    result = verify_range(book, cfi, "Hello brave new world. Second")
     assert result.ok
+    assert result.extracted_text == "Hello brave new world.\nSecond"
 
 
 def test_cross_spine_range_matches(book: EpubMap) -> None:
