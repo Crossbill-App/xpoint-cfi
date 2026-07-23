@@ -1,5 +1,8 @@
 # xpoint-cfi
 
+> [!CAUTION]
+> This is really experimental vibe-coded implementation for my personal/experimental use with Crossbill. Use at your own risk and expect that some books have content where positions do not convert properly!
+
 Convert **KOReader (crengine) xpointer** position strings to **EPUB CFI**
 (Canonical Fragment Identifiers, EPUB CFI 1.1) and back — in both directions, grounded
 in the actual EPUB document. Pure Python; the only runtime dependency is `lxml`.
