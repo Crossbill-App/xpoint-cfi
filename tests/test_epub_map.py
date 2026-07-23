@@ -11,9 +11,9 @@ from conftest import build_epub, xhtml_doc
 
 from xpoint_cfi.cfi import Step
 from xpoint_cfi.epub_map import (
-    Chunk,
     EpubMap,
     NodeMap,
+    _Element,  # pyright: ignore[reportPrivateUsage]
     cp_to_utf16,
     utf16_to_cp,
 )
@@ -26,6 +26,12 @@ EMOJI = "\U0001f600"  # U+1F600, one code point / two UTF-16 units
 # --------------------------------------------------------------------------------------
 # Container / OPF parsing
 # --------------------------------------------------------------------------------------
+
+
+def _require_text_pos(nm: NodeMap, elem: _Element, node_index: int, offset: int) -> tuple[int, int]:
+    loc = nm.text_position_to_cfi(elem, node_index, offset)
+    assert loc is not None
+    return loc
 
 
 def test_spine_count(simple_book: bytes) -> None:
@@ -291,13 +297,16 @@ def test_mixed_inline_gap_indices_and_text(chap1: NodeMap) -> None:
     ]
 
 
-def test_mixed_inline_part_nodes(chap1: NodeMap) -> None:
+def test_mixed_inline_anchor_nodes(chap1: NodeMap) -> None:
     p = chap1.element_by_xpath(normalize_xpath("/body/div/p[1]"))
     chunks = chap1.chunks(p)
-    # gap_0 is the element's own text (node is None); later gaps are a child's tail.
-    assert chunks[0].parts[0].node is None
-    assert chunks[1].parts[0].node is not None
-    assert chunks[1].parts[0].text == " new "
+    # gap_0 anchors at the element's own leading text; later gaps at a child's tail.
+    assert chunks[0].anchor == (p, "text")
+    anchor = chunks[1].anchor
+    assert anchor is not None
+    node, attr = anchor
+    assert attr == "tail"
+    assert node.tail == " new "
 
 
 def test_empty_paragraph_has_one_empty_chunk(chap1: NodeMap) -> None:
@@ -305,7 +314,7 @@ def test_empty_paragraph_has_one_empty_chunk(chap1: NodeMap) -> None:
     chunks = chap1.chunks(p)
     assert len(chunks) == 1
     assert chunks[0].text == ""
-    assert chunks[0].parts == ()
+    assert chunks[0].anchor is None
 
 
 def test_chunk_count_is_element_children_plus_one(chap1: NodeMap) -> None:
@@ -314,11 +323,13 @@ def test_chunk_count_is_element_children_plus_one(chap1: NodeMap) -> None:
     assert len(chap1.chunks(p)) == 3
 
 
-def test_chunk_text_property_concatenates() -> None:
-    from xpoint_cfi.epub_map import TextPart
-
-    chunk = Chunk(odd_index=1, parts=(TextPart(None, "ab"), TextPart(None, "cd")))
-    assert chunk.text == "abcd"
+def test_comment_split_text_is_one_chunk_with_leading_anchor(chap1: NodeMap) -> None:
+    # <p>Before<!--c-->after</p>: one chunk whose text spans the comment split, anchored
+    # at the element's leading text.
+    p = chap1.element_by_xpath(normalize_xpath("/body/div/p[2]"))
+    chunks = chap1.chunks(p)
+    assert chunks[0].text == "Beforeafter"
+    assert chunks[0].anchor == (p, "text")
 
 
 # --------------------------------------------------------------------------------------
@@ -337,7 +348,7 @@ def test_text_position_round_trip(chap1: NodeMap) -> None:
     p = chap1.element_by_xpath(normalize_xpath("/body/div/p[1]"))
     for node_index, text in ((1, "Hello "), (2, " new "), (3, ".")):
         for offset in range(len(text) + 1):
-            odd, utf16 = chap1.text_position_to_cfi(p, node_index, offset)
+            odd, utf16 = _require_text_pos(chap1, p, node_index, offset)
             assert chap1.cfi_to_text_position(p, odd, utf16) == (node_index, offset)
 
 
@@ -345,7 +356,7 @@ def test_emoji_utf16_diverges_from_code_points(chap1: NodeMap) -> None:
     p = chap1.element_by_xpath(normalize_xpath("/body/div/p[3]"))
     # "Emoji 😀 tail": code-point offset 8 sits after the emoji, but the emoji is two
     # UTF-16 units, so the CFI offset is 9, not 8.
-    odd, utf16 = chap1.text_position_to_cfi(p, 1, 8)
+    odd, utf16 = _require_text_pos(chap1, p, 1, 8)
     assert (odd, utf16) == (1, 9)
     assert chap1.cfi_to_text_position(p, 1, 9) == (1, 8)
 
@@ -524,7 +535,7 @@ def test_leading_whitespace_only_chunk_is_not_counted() -> None:
         (3, "\n Keep reading"),
     ]
     # text()[1] maps to odd_index 3 (the leading ws-only chunk is invisible).
-    odd, _ = nm.text_position_to_cfi(p, 1, 0)
+    odd, _ = _require_text_pos(nm, p, 1, 0)
     assert odd == 3
 
 
@@ -533,7 +544,7 @@ def test_single_space_chunk_is_not_counted() -> None:
     nm = _doc_from_body("<p> <span>y</span> long text</p>")
     p = nm.element_by_xpath(normalize_xpath("/body/p"))
     assert [(c.odd_index, c.text) for c in nm.chunks(p)] == [(1, " "), (3, " long text")]
-    odd, _ = nm.text_position_to_cfi(p, 1, 0)
+    odd, _ = _require_text_pos(nm, p, 1, 0)
     assert odd == 3
 
 
@@ -584,7 +595,7 @@ def test_collapsed_offset_round_trip_over_double_spaces() -> None:
 
     collapsed = collapse(nm.chunks(p)[0].text)
     for offset in range(len(collapsed) + 1):
-        odd, utf16 = nm.text_position_to_cfi(p, 1, offset)
+        odd, utf16 = _require_text_pos(nm, p, 1, offset)
         assert nm.cfi_to_text_position(p, odd, utf16) == (1, offset)
 
 
@@ -598,7 +609,7 @@ def test_pre_element_uses_identity_mapping() -> None:
     # A full raw sweep round-trips as identity (no collapse).
     text = nm.chunks(pre)[0].text
     for offset in range(len(text) + 1):
-        odd, utf16 = nm.text_position_to_cfi(pre, 1, offset)
+        odd, utf16 = _require_text_pos(nm, pre, 1, offset)
         assert nm.cfi_to_text_position(pre, odd, utf16) == (1, offset)
 
 
@@ -623,11 +634,22 @@ def test_cfi_to_text_position_whitespace_only_chunk_nonzero_offset_raises() -> N
         nm.cfi_to_text_position(p, 1, 1)
 
 
-def test_has_countable_text() -> None:
+def test_textless_element_default_position_is_element_boundary() -> None:
+    # The default text()[1].0 on an element crengine keeps no text node for (an <img/>
+    # child only, or leading whitespace only) has no text location: None, not an error.
     nm = _doc_from_body("<p>text</p><p><img/></p><p> </p>")
     p1 = nm.element_by_xpath(normalize_xpath("/body/p[1]"))
     p2 = nm.element_by_xpath(normalize_xpath("/body/p[2]"))
     p3 = nm.element_by_xpath(normalize_xpath("/body/p[3]"))
-    assert nm.has_countable_text(p1)
-    assert not nm.has_countable_text(p2)  # only an <img/>, no text node
-    assert not nm.has_countable_text(p3)  # whitespace only
+    assert nm.text_position_to_cfi(p1, 1, 0) == (1, 0)
+    assert nm.text_position_to_cfi(p2, 1, 0) is None
+    assert nm.text_position_to_cfi(p3, 1, 0) is None
+
+
+def test_textless_element_nondefault_position_raises() -> None:
+    nm = _doc_from_body("<p><img/></p>")
+    p = nm.element_by_xpath(normalize_xpath("/body/p"))
+    with pytest.raises(ResolutionError, match="countable"):
+        nm.text_position_to_cfi(p, 1, 5)
+    with pytest.raises(ResolutionError, match="countable"):
+        nm.text_position_to_cfi(p, 2, 0)

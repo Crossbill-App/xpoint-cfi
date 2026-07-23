@@ -28,6 +28,12 @@ from xpoint_cfi.epub_map import _Element  # pyright: ignore[reportPrivateUsage]
 EMOJI = "\U0001f600"
 
 
+def _require_text_pos(nm: NodeMap, elem: _Element, node_index: int, offset: int) -> tuple[int, int]:
+    loc = nm.text_position_to_cfi(elem, node_index, offset)
+    assert loc is not None
+    return loc
+
+
 @pytest.fixture
 def book(simple_book: bytes) -> EpubMap:
     return EpubMap.from_bytes(simple_book)
@@ -126,7 +132,7 @@ def test_cfi_sort_key_agrees_with_document_order(whitespace_book: EpubMap) -> No
                 for offset in _sample_offsets(len(collapsed)):
                     xp = XPoint(spine_index, xpath, node_index, offset, has_text_position=True)
                     cfi = xpoint_to_cfi(book, xp)
-                    odd, utf16 = nm.text_position_to_cfi(elem, node_index, offset)
+                    odd, utf16 = _require_text_pos(nm, elem, node_index, offset)
                     absolute = len(nm.extract_text(None, (elem, odd, utf16)))
                     positions.append((cfi, absolute))
         by_key = sorted(positions, key=lambda pair: pair[0].sort_key())

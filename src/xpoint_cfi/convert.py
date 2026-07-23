@@ -71,16 +71,13 @@ def xpoint_to_cfi(book: EpubMap, xpoint: XPoint) -> Cfi:
     node = book.doc(xpoint.doc_fragment_index)
     elem = node.element_by_xpath(normalize_xpath(xpoint.xpath))
     element_steps = node.cfi_steps_for_element(elem)
-    textless_boundary = (
-        xpoint.has_text_position
-        and not node.has_countable_text(elem)
-        and xpoint.text_node_index == 1
-        and xpoint.char_offset == 0
+    text_location = (
+        node.text_position_to_cfi(elem, xpoint.text_node_index, xpoint.char_offset)
+        if xpoint.has_text_position
+        else None
     )
-    if xpoint.has_text_position and not textless_boundary:
-        odd_index, utf16_offset = node.text_position_to_cfi(
-            elem, xpoint.text_node_index, xpoint.char_offset
-        )
+    if text_location is not None:
+        odd_index, utf16_offset = text_location
         document = LocalPath(
             steps=(*element_steps, Step(odd_index, None)),
             offset=CharOffset(utf16_offset, None),
@@ -225,15 +222,12 @@ def _factor_range(start_cfi: Cfi, end_cfi: Cfi) -> CfiRange:
     a_following = a[div + 1 :]
     b_following = b[div + 1 :]
 
-    # A subpath must keep at least one step: the spec permits bare-offset subpaths,
-    # but widely-used resolvers (e.g. epub-cfi-resolver) cannot parse them, and the
-    # spec's own range examples always carry a step.
-    def _remainder_empty(steps: tuple[Step, ...], _offset: CharOffset | None, tail: int) -> bool:
-        return not steps and tail == 0
-
+    # A subpath must keep at least one step (whether or not it carries an offset): the
+    # spec permits bare-offset subpaths, but widely-used resolvers (e.g.
+    # epub-cfi-resolver) cannot parse them, and the spec's own range examples always
+    # carry a step.
     while k > 1 and (
-        _remainder_empty(a_lp.steps[k:], a_lp.offset, len(a_following))
-        or _remainder_empty(b_lp.steps[k:], b_lp.offset, len(b_following))
+        (not a_lp.steps[k:] and not a_following) or (not b_lp.steps[k:] and not b_following)
     ):
         k -= 1
 

@@ -71,41 +71,30 @@ def _element_children(node: _Element) -> list[_Element]:
     return [child for child in node if _is_element(child)]
 
 
-def _child_position(child: _Element) -> int:
-    """Return the 1-based position of ``child`` among its parent's element children."""
+def _sibling_position(child: _Element, *, same_name: bool = False) -> int:
+    """Return the 1-based position of ``child`` among its parent's element children.
+
+    With ``same_name`` only siblings sharing the child's local name are counted
+    (xpointer ``tag[N]`` semantics); otherwise all element siblings count (CFI
+    even-step semantics).
+    """
+    name = _local_name(child) if same_name else None
     count = 0
     for sibling in child.itersiblings(preceding=True):
-        if _is_element(sibling):
+        if _is_element(sibling) and (name is None or _local_name(sibling) == name):
             count += 1
     return count + 1
 
 
-def _same_name_position(child: _Element) -> int:
-    """Return the 1-based position of ``child`` among same-local-name element siblings."""
-    name = _local_name(child)
-    count = 0
-    for sibling in child.itersiblings(preceding=True):
-        if _is_element(sibling) and _local_name(sibling) == name:
-            count += 1
-    return count + 1
+def _nth_child(parent: _Element, index: int, name: str | None = None) -> _Element | None:
+    """Return the ``index``-th (1-based) element child of ``parent``, or ``None``.
 
-
-def _nth_named_child(parent: _Element, name: str, index: int) -> _Element | None:
-    """Return the ``index``-th (1-based) element child of ``parent`` with local ``name``."""
+    With ``name`` only element children with that local name are counted (xpointer
+    semantics); otherwise every element child counts (CFI semantics).
+    """
     count = 0
     for child in parent:
-        if _is_element(child) and _local_name(child) == name:
-            count += 1
-            if count == index:
-                return child
-    return None
-
-
-def _nth_element_child(parent: _Element, index: int) -> _Element | None:
-    """Return the ``index``-th (1-based) element child of ``parent`` (any local name)."""
-    count = 0
-    for child in parent:
-        if _is_element(child):
+        if _is_element(child) and (name is None or _local_name(child) == name):
             count += 1
             if count == index:
                 return child
@@ -145,33 +134,54 @@ def utf16_to_cp(text: str, utf16_offset: int) -> int:
 
 
 @dataclass(frozen=True)
-class TextPart:
-    """One contiguous piece of a chunk's text.
-
-    ``node`` is ``None`` when the text is the owning element's ``.text``; otherwise it is
-    the child node (an element, comment, or PI) whose ``.tail`` supplies the text.
-    """
-
-    node: _Element | None
-    text: str
-
-
-@dataclass(frozen=True)
 class Chunk:
     """The character-data gap at one CFI odd index within an element.
 
     ``odd_index`` is the CFI odd index (``1`` before the first element child, ``2k+1``
-    after the k-th). ``parts`` holds only the non-empty pieces, in document order, but a
-    chunk with no text still exists (empty ``parts``).
+    after the k-th). ``text`` is the gap's full character data (pieces split by
+    comments/PIs are already concatenated). ``anchor`` is the lxml location where that
+    text begins — ``(node, "text")`` for an element's leading text or ``(node, "tail")``
+    for text after a child — or ``None`` for a gap with no text at all.
     """
 
     odd_index: int
-    parts: tuple[TextPart, ...]
+    text: str
+    anchor: tuple[_Element, str] | None
 
-    @property
-    def text(self) -> str:
-        """Return the concatenation of all part texts."""
-        return "".join(part.text for part in self.parts)
+
+@dataclass(frozen=True)
+class _OffsetView:
+    """Bridges crengine's collapsed offsets and raw code-point offsets for one chunk.
+
+    ``pos`` is the :func:`~xpoint_cfi.crengine_text.collapse_with_map` back-map, or
+    ``None`` for identity mapping (``<pre>`` content, where crengine keeps whitespace).
+    """
+
+    raw: str
+    collapsed: str
+    pos: tuple[int, ...] | None
+
+    def raw_cp(self, collapsed_offset: int) -> int:
+        """Return the raw code-point offset for a collapsed-space offset."""
+        return collapsed_offset if self.pos is None else self.pos[collapsed_offset]
+
+    def collapsed_cp(self, raw_cp: int) -> int:
+        """Return the collapsed-space offset for a raw code-point offset."""
+        return raw_cp if self.pos is None else raw_to_collapsed(self.raw, raw_cp)
+
+
+@dataclass(frozen=True)
+class _TextIndex:
+    """Document-order text locations of one body, with absolute offsets precomputed.
+
+    Built once per :class:`NodeMap` (the tree is immutable) and reused by every
+    :meth:`NodeMap.extract_text` call.
+    """
+
+    locations: tuple[tuple[_Element, str, str], ...]
+    cumulative: tuple[int, ...]
+    starts: dict[tuple[int, str], int]
+    full: str
 
 
 class NodeMap:
@@ -179,11 +189,13 @@ class NodeMap:
 
     def __init__(self, root: _Element) -> None:
         self._root = root
+        self._chunk_cache: dict[int, tuple[Chunk, ...]] = {}
+        self._text_index: _TextIndex | None = None
 
     # -- element addressing ------------------------------------------------------------
 
     def _find_body(self) -> _Element:
-        body = _nth_named_child(self._root, "body", 1)
+        body = _nth_child(self._root, 1, "body")
         if body is None:
             raise ResolutionError("<body>", "document element has no <body> child")
         return body
@@ -202,7 +214,7 @@ class NodeMap:
         xpath = _segments_to_xpath(segments)
         node = self._root
         for tag, index in segments:
-            child = _nth_named_child(node, tag, index)
+            child = _nth_child(node, index, tag)
             if child is None:
                 raise ResolutionError(xpath, f"no <{tag}> #{index} under <{_local_name(node)}>")
             node = child
@@ -226,7 +238,7 @@ class NodeMap:
             parent = node.getparent()
             if parent is None:
                 raise ResolutionError("<element>", "element is not contained in a <body>")
-            parts.append(f"{_local_name(node)}[{_same_name_position(node)}]")
+            parts.append(f"{_local_name(node)}[{_sibling_position(node, same_name=True)}]")
             node = parent
         parts.reverse()
         return "/" + "/".join(parts)
@@ -248,7 +260,7 @@ class NodeMap:
         chain.reverse()
         steps: list[Step] = []
         for child in chain:
-            index = 2 * _child_position(child)
+            index = 2 * _sibling_position(child)
             steps.append(Step(index=index, assertion=child.get("id")))
         return tuple(steps)
 
@@ -265,7 +277,7 @@ class NodeMap:
                 raise ResolutionError(
                     step.to_string(), "odd step index does not address an element"
                 )
-            child = _nth_element_child(node, step.index // 2)
+            child = _nth_child(node, step.index // 2)
             resolved = child
             if (
                 resolved is not None
@@ -295,25 +307,40 @@ class NodeMap:
         """Return every character-data gap of ``elem``, including empty ones.
 
         Comments and PIs do not open a new gap; their ``.tail`` text is appended to the
-        current gap. Only non-empty pieces are kept as :class:`TextPart`\\ s, but a gap
-        with no text is still emitted as an empty :class:`Chunk`.
+        current gap's text. Results are cached per element (the tree is immutable).
         """
+        cached = self._chunk_cache.get(id(elem))
+        if cached is not None:
+            return cached
+
         result: list[Chunk] = []
         seen_elements = 0
-        current: list[TextPart] = []
+        pieces: list[str] = []
+        anchor: tuple[_Element, str] | None = None
         if elem.text:
-            current.append(TextPart(None, elem.text))
+            pieces.append(elem.text)
+            anchor = (elem, "text")
+
+        def close_gap() -> None:
+            result.append(
+                Chunk(odd_index=2 * seen_elements + 1, text="".join(pieces), anchor=anchor)
+            )
+
         for child in elem:
             if _is_element(child):
-                result.append(Chunk(odd_index=2 * seen_elements + 1, parts=tuple(current)))
+                close_gap()
                 seen_elements += 1
-                current = []
-                if child.tail:
-                    current.append(TextPart(child, child.tail))
-            elif child.tail:
-                current.append(TextPart(child, child.tail))
-        result.append(Chunk(odd_index=2 * seen_elements + 1, parts=tuple(current)))
-        return tuple(result)
+                pieces = []
+                anchor = None
+            if child.tail:
+                pieces.append(child.tail)
+                if anchor is None:
+                    anchor = (child, "tail")
+        close_gap()
+
+        chunks = tuple(result)
+        self._chunk_cache[id(elem)] = chunks
+        return chunks
 
     @staticmethod
     def _crengine_counts(chunk: Chunk) -> bool:
@@ -332,15 +359,6 @@ class NodeMap:
         """Return the chunks crengine keeps as text nodes (see :meth:`_crengine_counts`)."""
         return tuple(chunk for chunk in self.chunks(elem) if self._crengine_counts(chunk))
 
-    def has_countable_text(self, elem: _Element) -> bool:
-        """Return ``True`` when ``elem`` has at least one crengine-countable text chunk.
-
-        An element with none (e.g. ``<p><img/></p>``) has no ``text()`` node crengine
-        can address; an xpointer's ``text()``/``.offset`` on such an element degrades to
-        an element boundary. Public so converters need not reach into chunk internals.
-        """
-        return any(self._crengine_counts(chunk) for chunk in self.chunks(elem))
-
     @staticmethod
     def _in_pre(elem: _Element) -> bool:
         """Return ``True`` when ``elem`` or an ancestor is a ``<pre>`` element.
@@ -356,45 +374,50 @@ class NodeMap:
             node = node.getparent()
         return False
 
+    def _offset_view(self, elem: _Element, chunk: Chunk) -> _OffsetView:
+        """Return the collapsed⇄raw offset bridge for ``chunk`` of ``elem``.
+
+        Identity mapping inside ``<pre>`` content; the crengine collapse map otherwise.
+        """
+        if self._in_pre(elem):
+            return _OffsetView(raw=chunk.text, collapsed=chunk.text, pos=None)
+        collapsed, pos = collapse_with_map(chunk.text)
+        return _OffsetView(raw=chunk.text, collapsed=collapsed, pos=pos)
+
     def text_position_to_cfi(
         self, elem: _Element, text_node_index: int, char_offset: int
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int] | None:
         """Map an xpointer ``text()[N].offset`` to a CFI ``(odd_index, utf16_offset)``.
 
-        ``text_node_index`` counts crengine-countable chunks (whitespace-only chunks are
-        invisible). ``char_offset`` is a code-point offset into crengine's *collapsed*
-        text; it is translated to the raw source position (via
-        :func:`~xpoint_cfi.crengine_text.collapse_with_map`) and then to a UTF-16 offset,
-        which is what a CFI stores. Inside a ``<pre>`` element no collapsing happens and
-        the offset is used against the raw text directly.
+        ``text_node_index`` counts crengine-countable chunks (see
+        :meth:`_crengine_counts`). ``char_offset`` is a code-point offset in crengine's
+        text-node coordinate (collapsed space, or raw inside ``<pre>``); it is bridged
+        to a raw UTF-16 offset, which is what a CFI stores.
+
+        Returns ``None`` for the default ``text()[1].0`` position on an element crengine
+        keeps no text node for (e.g. KOReader's ``.../img.0``): such a point has no text
+        location and is an element boundary.
 
         Raises:
             ResolutionError: if ``text_node_index`` exceeds the number of countable text
-                chunks, or ``char_offset`` exceeds the chunk's (collapsed) length.
+                chunks, or ``char_offset`` exceeds the chunk's crengine text length.
         """
         countable = self._countable_chunks(elem)
+        if not countable and text_node_index == 1 and char_offset == 0:
+            return None
         if text_node_index < 1 or text_node_index > len(countable):
             raise ResolutionError(
                 f"text()[{text_node_index}]",
                 f"element has {len(countable)} countable text chunk(s)",
             )
         chunk = countable[text_node_index - 1]
-        text = chunk.text
-        if self._in_pre(elem):
-            if char_offset < 0 or char_offset > len(text):
-                raise ResolutionError(
-                    f"text()[{text_node_index}].{char_offset}",
-                    f"offset exceeds text-node length ({len(text)} code points)",
-                )
-            return chunk.odd_index, cp_to_utf16(text, char_offset)
-        collapsed, pos = collapse_with_map(text)
-        if char_offset < 0 or char_offset > len(collapsed):
+        view = self._offset_view(elem, chunk)
+        if char_offset < 0 or char_offset > len(view.collapsed):
             raise ResolutionError(
                 f"text()[{text_node_index}].{char_offset}",
-                f"offset exceeds collapsed text-node length ({len(collapsed)} code points)",
+                f"offset exceeds text-node length ({len(view.collapsed)} code points)",
             )
-        raw_cp = pos[char_offset]
-        return chunk.odd_index, cp_to_utf16(text, raw_cp)
+        return chunk.odd_index, cp_to_utf16(chunk.text, view.raw_cp(char_offset))
 
     def cfi_to_text_position(
         self, elem: _Element, odd_index: int, utf16_offset: int
@@ -431,8 +454,7 @@ class NodeMap:
                 )
             return max(preceding_countable, 1), 0
         raw_cp = utf16_to_cp(chunk.text, utf16_offset)
-        char_offset = raw_cp if self._in_pre(elem) else raw_to_collapsed(chunk.text, raw_cp)
-        return preceding_countable, char_offset
+        return preceding_countable, self._offset_view(elem, chunk).collapsed_cp(raw_cp)
 
     # -- text extraction ---------------------------------------------------------------
 
@@ -444,43 +466,34 @@ class NodeMap:
         """Return the body text between two ``(element, odd_index, utf16_offset)`` bounds.
 
         A ``None`` bound denotes the document start / end. Positions are resolved via the
-        chunk model onto concrete lxml text locations, then the body's text is walked in
-        document order and sliced between the two absolute offsets.
+        chunk model onto concrete lxml text locations, then sliced out of the document's
+        text index (built once per :class:`NodeMap` and cached).
         """
-        body = self._find_body()
-        locations = list(_iter_text_locations(body))
-        cumulative: list[int] = []
-        running = 0
-        for _, _, text in locations:
-            cumulative.append(running)
-            running += len(text)
-        total = running
-        location_start = {
-            (id(node), attr): cum
-            for (node, attr, _), cum in zip(locations, cumulative, strict=True)
-        }
+        index = self._get_text_index()
+        start_index = 0 if start is None else self._absolute_offset(start, index)
+        end_index = len(index.full) if end is None else self._absolute_offset(end, index)
+        return index.full[start_index:end_index]
 
-        start_index = (
-            0
-            if start is None
-            else self._absolute_offset(start, locations, cumulative, location_start, total)
-        )
-        end_index = (
-            total
-            if end is None
-            else self._absolute_offset(end, locations, cumulative, location_start, total)
-        )
-        full = "".join(text for _, _, text in locations)
-        return full[start_index:end_index]
+    def _get_text_index(self) -> _TextIndex:
+        if self._text_index is None:
+            locations = tuple(_iter_text_locations(self._find_body()))
+            cumulative: list[int] = []
+            running = 0
+            for _, _, text in locations:
+                cumulative.append(running)
+                running += len(text)
+            self._text_index = _TextIndex(
+                locations=locations,
+                cumulative=tuple(cumulative),
+                starts={
+                    (id(node), attr): cum
+                    for (node, attr, _), cum in zip(locations, cumulative, strict=True)
+                },
+                full="".join(text for _, _, text in locations),
+            )
+        return self._text_index
 
-    def _absolute_offset(
-        self,
-        position: tuple[_Element, int, int],
-        locations: list[tuple[_Element, str, str]],
-        cumulative: list[int],
-        location_start: dict[tuple[int, str], int],
-        total: int,
-    ) -> int:
+    def _absolute_offset(self, position: tuple[_Element, int, int], index: _TextIndex) -> int:
         elem, odd_index, utf16_offset = position
         all_chunks = self.chunks(elem)
         chunk = next((c for c in all_chunks if c.odd_index == odd_index), None)
@@ -488,43 +501,32 @@ class NodeMap:
             raise ResolutionError(
                 f"/{odd_index}", f"gap index out of range (element has {len(all_chunks)} gaps)"
             )
-        cp = utf16_to_cp(chunk.text, utf16_offset)
-        if chunk.parts:
-            first = chunk.parts[0]
-            node = elem if first.node is None else first.node
-            attr = "text" if first.node is None else "tail"
-            base = location_start[(id(node), attr)]
-            return base + cp
-        return self._empty_gap_offset(elem, odd_index, locations, cumulative, total)
+        if chunk.anchor is not None:
+            node, attr = chunk.anchor
+            return index.starts[(id(node), attr)] + utf16_to_cp(chunk.text, utf16_offset)
+        return self._empty_gap_offset(elem, odd_index, index)
 
-    def _empty_gap_offset(
-        self,
-        elem: _Element,
-        odd_index: int,
-        locations: list[tuple[_Element, str, str]],
-        cumulative: list[int],
-        total: int,
-    ) -> int:
+    def _empty_gap_offset(self, elem: _Element, odd_index: int, index: _TextIndex) -> int:
         children = _element_children(elem)
         gap = (odd_index - 1) // 2
         if gap < len(children):
             following = {id(node) for node in children[gap].iter()}
-            for i, (node, _, _) in enumerate(locations):
+            for i, (node, _, _) in enumerate(index.locations):
                 if id(node) in following:
-                    return cumulative[i]
+                    return index.cumulative[i]
         if gap > 0:
             preceding = {id(node) for node in children[gap - 1].iter()}
             last = -1
-            for i, (node, _, _) in enumerate(locations):
+            for i, (node, _, _) in enumerate(index.locations):
                 if id(node) in preceding:
                     last = i
             if last >= 0:
-                return cumulative[last] + len(locations[last][2])
+                return index.cumulative[last] + len(index.locations[last][2])
         subtree = {id(node) for node in elem.iter()}
-        for i, (node, _, _) in enumerate(locations):
+        for i, (node, _, _) in enumerate(index.locations):
             if id(node) in subtree:
-                return cumulative[i]
-        return total
+                return index.cumulative[i]
+        return len(index.full)
 
 
 def _iter_text_locations(node: _Element) -> Iterator[tuple[_Element, str, str]]:

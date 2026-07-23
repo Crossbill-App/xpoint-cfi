@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from lxml import etree
 
 from .cfi import CfiRange, parse_cfi
-from .convert import _rejoin, cfi_to_xpoint  # pyright: ignore[reportPrivateUsage]
+from .convert import cfi_range_to_xpoint_range
 from .epub_map import cp_to_utf16
 from .exceptions import ResolutionError
 from .xpoint import normalize_xpath
@@ -65,10 +65,9 @@ def verify_range(book: EpubMap, rng: CfiRange | str, expected_text: str) -> Veri
             raise ResolutionError(rng, "expected a range CFI (epubcfi(parent,start,end))")
         rng = parsed
 
-    start_xp = cfi_to_xpoint(book, _rejoin(rng.parent, rng.start))
-    end_xp = cfi_to_xpoint(book, _rejoin(rng.parent, rng.end))
+    xpoint_range = cfi_range_to_xpoint_range(book, rng)
 
-    extracted = _extract_between(book, start_xp, end_xp)
+    extracted = _extract_between(book, xpoint_range.start, xpoint_range.end)
     ok = normalize_whitespace(extracted) == normalize_whitespace(expected_text)
     return VerificationResult(ok=ok, extracted_text=extracted)
 
@@ -100,10 +99,10 @@ def _bound(node: NodeMap, xpoint: XPoint, *, is_end: bool) -> tuple[_Element, in
     """
     elem = node.element_by_xpath(normalize_xpath(xpoint.xpath))
     if xpoint.has_text_position:
-        odd_index, utf16_offset = node.text_position_to_cfi(
-            elem, xpoint.text_node_index, xpoint.char_offset
-        )
-        return (elem, odd_index, utf16_offset)
+        location = node.text_position_to_cfi(elem, xpoint.text_node_index, xpoint.char_offset)
+        if location is not None:
+            odd_index, utf16_offset = location
+            return (elem, odd_index, utf16_offset)
     chunks = node.chunks(elem)
     if is_end:
         last = chunks[-1]
