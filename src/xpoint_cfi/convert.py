@@ -212,8 +212,11 @@ def _factor_range(start_cfi: Cfi, end_cfi: Cfi) -> CfiRange:
     a_following = a[div + 1 :]
     b_following = b[div + 1 :]
 
-    def _remainder_empty(steps: tuple[Step, ...], offset: CharOffset | None, tail: int) -> bool:
-        return not steps and offset is None and tail == 0
+    # A subpath must keep at least one step: the spec permits bare-offset subpaths,
+    # but widely-used resolvers (e.g. epub-cfi-resolver) cannot parse them, and the
+    # spec's own range examples always carry a step.
+    def _remainder_empty(steps: tuple[Step, ...], _offset: CharOffset | None, tail: int) -> bool:
+        return not steps and tail == 0
 
     while k > 1 and (
         _remainder_empty(a_lp.steps[k:], a_lp.offset, len(a_following))

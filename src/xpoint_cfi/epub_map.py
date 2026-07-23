@@ -481,6 +481,13 @@ def _segments_to_xpath(segments: tuple[tuple[str, int], ...]) -> str:
     return "/" + "/".join(f"{tag}[{index}]" for tag, index in segments)
 
 
+@dataclass(frozen=True)
+class _SpineItem:
+    idref: str
+    href: str
+    itemref_id: str | None
+
+
 class EpubMap:
     """Parsed EPUB package exposing spine items as lazily-built :class:`NodeMap`\\ s."""
 
@@ -535,7 +542,7 @@ class EpubMap:
         except etree.XMLSyntaxError as exc:
             raise EpubStructureError(f"malformed OPF package: {exc}") from exc
 
-    def _parse_package(self, package: _Element) -> tuple[int, list[tuple[str, str]]]:
+    def _parse_package(self, package: _Element) -> tuple[int, list[_SpineItem]]:
         spine_el: _Element | None = None
         manifest_el: _Element | None = None
         spine_position = 0
@@ -560,7 +567,7 @@ class EpubMap:
             if item_id is not None and href is not None:
                 manifest[item_id] = href
 
-        spine: list[tuple[str, str]] = []
+        spine: list[_SpineItem] = []
         for itemref in spine_el:
             if not _is_element(itemref) or _local_name(itemref) != "itemref":
                 continue
@@ -572,7 +579,7 @@ class EpubMap:
                 raise EpubStructureError(
                     f"spine itemref idref {idref!r} has no matching manifest <item>"
                 )
-            spine.append((idref, self._resolve_href(href)))
+            spine.append(_SpineItem(idref, self._resolve_href(href), itemref.get("id")))
         if not spine:
             raise EpubStructureError("spine has no itemrefs")
         return 2 * spine_position, spine
@@ -596,24 +603,30 @@ class EpubMap:
     def spine_href(self, spine_index: int) -> str:
         """Return the zip path of the spine item at 1-based ``spine_index``."""
         self._check_spine_index(spine_index)
-        return self._spine[spine_index - 1][1]
+        return self._spine[spine_index - 1].href
 
     def spine_idref(self, spine_index: int) -> str:
         """Return the manifest idref of the spine item at 1-based ``spine_index``."""
         self._check_spine_index(spine_index)
-        return self._spine[spine_index - 1][0]
+        return self._spine[spine_index - 1].idref
 
     def spine_step(self, spine_index: int) -> Step:
-        """Return the CFI itemref step for the spine item at 1-based ``spine_index``."""
+        """Return the CFI itemref step for the spine item at 1-based ``spine_index``.
+
+        Per the CFI spec the ID assertion names the ``<itemref>``'s **own** ``id``
+        attribute when it has one; the idref must not be used (spec-conformant
+        resolvers repair via ``getElementById``, and the idref names the manifest
+        ``<item>`` instead of the spine ``<itemref>``).
+        """
         self._check_spine_index(spine_index)
-        idref = self._spine[spine_index - 1][0]
-        return Step(index=2 * spine_index, assertion=idref)
+        return Step(index=2 * spine_index, assertion=self._spine[spine_index - 1].itemref_id)
 
     def spine_index_for_step(self, step: Step) -> int:
         """Return the 1-based spine index a CFI itemref ``step`` addresses.
 
         An even index within range wins outright; otherwise the step's ``id`` assertion
-        is matched against manifest idrefs (CFI self-repair).
+        is matched against itemref ids, then against manifest idrefs (some producers
+        put the idref in the assertion), as CFI self-repair.
 
         Raises:
             ResolutionError: if neither the index nor the assertion resolves.
@@ -623,8 +636,11 @@ class EpubMap:
             if 1 <= spine_index <= len(self._spine):
                 return spine_index
         if step.assertion is not None:
-            for i, (idref, _) in enumerate(self._spine, start=1):
-                if idref == step.assertion:
+            for i, item in enumerate(self._spine, start=1):
+                if item.itemref_id == step.assertion:
+                    return i
+            for i, item in enumerate(self._spine, start=1):
+                if item.idref == step.assertion:
                     return i
         raise ResolutionError(step.to_string(), "does not address any spine item")
 
@@ -649,7 +665,7 @@ class EpubMap:
         cached = self._doc_cache.get(spine_index)
         if cached is not None:
             return cached
-        href = self._spine[spine_index - 1][1]
+        href = self._spine[spine_index - 1].href
         try:
             raw = self._zip.read(href)
         except KeyError as exc:

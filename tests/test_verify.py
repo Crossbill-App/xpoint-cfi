@@ -127,4 +127,4 @@ def test_mismatch_against_a_different_book_is_detected(book: EpubMap) -> None:
 
 def test_non_range_cfi_string_is_rejected(book: EpubMap) -> None:
     with pytest.raises(ResolutionError, match="range"):
-        verify_range(book, "epubcfi(/6/2[item1]!/4/2[t]/2/1:0)", "x")
+        verify_range(book, "epubcfi(/6/2[ref1]!/4/2[t]/2/1:0)", "x")

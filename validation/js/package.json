@@ -1,0 +1,15 @@
+{
+  "name": "xpoint-cfi-validation-js",
+  "version": "1.0.0",
+  "description": "Independent JS CFI resolver for the xpoint-cfi validation pipeline (epub-cfi-resolver + jsdom).",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "resolve": "node resolve.mjs",
+    "smoke": "node smoke.mjs"
+  },
+  "dependencies": {
+    "epub-cfi-resolver": "^1.0.2",
+    "jsdom": "^29.1.1"
+  }
+}

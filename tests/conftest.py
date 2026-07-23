@@ -7,10 +7,17 @@ with :func:`build_epub` from plain XHTML strings.
 from __future__ import annotations
 
 import io
+import sys
 import urllib.parse
 import zipfile
+from pathlib import Path
 
 import pytest
+
+# Make the repo-root `validation` package importable from the test suite.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 _CONTAINER_XML = (
     '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -45,7 +52,7 @@ def _build_opf(hrefs: list[str], *, spine_step_padding: bool) -> str:
     for i, href in enumerate(hrefs, start=1):
         quoted = urllib.parse.quote(href)
         items.append(f'<item id="item{i}" href="{quoted}" media-type="application/xhtml+xml"/>')
-        itemrefs.append(f'<itemref idref="item{i}"/>')
+        itemrefs.append(f'<itemref idref="item{i}" id="ref{i}"/>')
     manifest = "<manifest>" + "".join(items) + "</manifest>"
     spine = "<spine>" + "".join(itemrefs) + "</spine>"
     padding = "<guide/>" if spine_step_padding else ""
@@ -61,7 +68,8 @@ def _build_opf(hrefs: list[str], *, spine_step_padding: bool) -> str:
 def build_epub(docs: dict[str, str], *, spine_step_padding: bool = False) -> bytes:
     """Assemble a minimal valid EPUB from ``docs`` (a mapping of href to XHTML string).
 
-    Manifest item ids and spine idrefs are ``item1..itemN`` in dict order. The returned
+    Manifest item ids and spine idrefs are ``item1..itemN`` and itemref ids are
+    ``ref1..refN``, in dict order. The returned
     bytes are a complete EPUB zip: a stored ``mimetype`` entry first, ``container.xml``,
     the OPF, and one document per entry under ``OEBPS/``.
     """

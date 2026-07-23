@@ -9,3 +9,4 @@ test-books/
 test-books/
 validation/js/node_modules/
 validation/build/
+.idea/

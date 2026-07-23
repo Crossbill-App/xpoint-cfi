@@ -134,8 +134,8 @@ def test_malformed_opf_raises() -> None:
 # --------------------------------------------------------------------------------------
 
 
-def test_spine_step(simple_book: bytes) -> None:
-    assert EpubMap.from_bytes(simple_book).spine_step(2) == Step(index=4, assertion="item2")
+def test_spine_step_uses_itemref_own_id(simple_book: bytes) -> None:
+    assert EpubMap.from_bytes(simple_book).spine_step(2) == Step(index=4, assertion="ref2")
 
 
 def test_spine_step_out_of_range(simple_book: bytes) -> None:
@@ -154,14 +154,19 @@ def test_spine_index_for_step_even_in_range_wins(simple_book: bytes) -> None:
     assert book.spine_index_for_step(Step(index=6, assertion="mismatch")) == 3
 
 
-def test_spine_index_for_step_self_repair_via_idref(simple_book: bytes) -> None:
+def test_spine_index_for_step_self_repair_via_itemref_id(simple_book: bytes) -> None:
+    book = EpubMap.from_bytes(simple_book)
+    assert book.spine_index_for_step(Step(index=999, assertion="ref2")) == 2
+
+
+def test_spine_index_for_step_self_repair_via_idref_fallback(simple_book: bytes) -> None:
     book = EpubMap.from_bytes(simple_book)
     assert book.spine_index_for_step(Step(index=999, assertion="item2")) == 2
 
 
 def test_spine_index_for_step_odd_falls_back_to_assertion(simple_book: bytes) -> None:
     book = EpubMap.from_bytes(simple_book)
-    assert book.spine_index_for_step(Step(index=7, assertion="item1")) == 1
+    assert book.spine_index_for_step(Step(index=7, assertion="ref1")) == 1
 
 
 def test_spine_index_for_step_unresolvable(simple_book: bytes) -> None:

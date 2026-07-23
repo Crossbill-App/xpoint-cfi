@@ -13,7 +13,7 @@ blocks). ``chap1``'s body is::
       </div>
     </body>
 
-The package path is ``/6`` (the spine element step) then ``/2[item1]`` (spine item 1).
+The package path is ``/6`` (the spine element step) then ``/2[ref1]`` (spine item 1).
 """
 
 from __future__ import annotations
@@ -44,13 +44,13 @@ def book(simple_book: bytes) -> EpubMap:
 def test_text_position_maps_to_full_cfi(book: EpubMap) -> None:
     # p[1] gap_0 ("Hello ") offset 0: element steps /4/2[intro]/2, odd step /1, offset :0
     xp = "/body/DocFragment[1]/body/div/p[1]/text().0"
-    assert xpoint_to_cfi_string(book, xp) == "epubcfi(/6/2[item1]!/4/2[intro]/2/1:0)"
+    assert xpoint_to_cfi_string(book, xp) == "epubcfi(/6/2[ref1]!/4/2[intro]/2/1:0)"
 
 
 def test_second_text_node_maps_to_odd_step_three(book: EpubMap) -> None:
     # p[1] text()[2] is the second non-empty chunk (" new "), CFI gap /3.
     xp = "/body/DocFragment[1]/body/div/p[1]/text()[2].2"
-    assert xpoint_to_cfi_string(book, xp) == "epubcfi(/6/2[item1]!/4/2[intro]/2/3:2)"
+    assert xpoint_to_cfi_string(book, xp) == "epubcfi(/6/2[ref1]!/4/2[intro]/2/3:2)"
 
 
 def test_emoji_offset_is_utf16_not_code_points(book: EpubMap) -> None:
@@ -58,21 +58,21 @@ def test_emoji_offset_is_utf16_not_code_points(book: EpubMap) -> None:
     # units), so the CFI character offset is 9, not 8.
     xp = "/body/DocFragment[1]/body/div/p[3]/text().8"
     cfi = xpoint_to_cfi_string(book, xp)
-    assert cfi == "epubcfi(/6/2[item1]!/4/2[intro]/6/1:9)"
+    assert cfi == "epubcfi(/6/2[ref1]!/4/2[intro]/6/1:9)"
     assert ":9)" in cfi and ":8)" not in cfi
 
 
 def test_nested_element_steps(book: EpubMap) -> None:
     # inner div is child 5 (/10); its second <p> ("beta") is child 2 (/4).
     xp = "/body/DocFragment[1]/body/div/div/p[2]/text().4"
-    assert xpoint_to_cfi_string(book, xp) == "epubcfi(/6/2[item1]!/4/2[intro]/10/4/1:4)"
+    assert xpoint_to_cfi_string(book, xp) == "epubcfi(/6/2[ref1]!/4/2[intro]/10/4/1:4)"
 
 
 def test_element_boundary_has_no_odd_step_or_offset(book: EpubMap) -> None:
     # chap2: <h1 id="title"/> is body child 1, <p> is child 2 (/4); <a> is p child 1 (/2).
     # An element-boundary xpoint (no ".offset") produces element steps only.
     xp = "/body/DocFragment[2]/body/p/a"
-    assert xpoint_to_cfi_string(book, xp) == "epubcfi(/6/4[item2]!/4/4/2)"
+    assert xpoint_to_cfi_string(book, xp) == "epubcfi(/6/4[ref2]!/4/4/2)"
 
 
 # --------------------------------------------------------------------------------------
@@ -81,13 +81,13 @@ def test_element_boundary_has_no_odd_step_or_offset(book: EpubMap) -> None:
 
 
 def test_cfi_to_xpoint_text_position(book: EpubMap) -> None:
-    cfi = "epubcfi(/6/2[item1]!/4/2[intro]/6/1:9)"
+    cfi = "epubcfi(/6/2[ref1]!/4/2[intro]/6/1:9)"
     assert cfi_to_xpoint_string(book, cfi) == "/body/DocFragment[1]/body/div[1]/p[3]/text().8"
 
 
 def test_cfi_to_xpoint_element_boundary(book: EpubMap) -> None:
     # Final step is even with no offset -> element-boundary xpoint (no /text() or .off).
-    cfi = "epubcfi(/6/4[item2]!/4/4/2)"
+    cfi = "epubcfi(/6/4[ref2]!/4/4/2)"
     assert cfi_to_xpoint_string(book, cfi) == "/body/DocFragment[2]/body/p[1]/a[1]"
 
 
@@ -122,27 +122,27 @@ def test_xpoint_cfi_xpoint_round_trip_examples(book: EpubMap, xp: str) -> None:
 
 def test_nested_indirection_is_rejected(book: EpubMap) -> None:
     with pytest.raises(ResolutionError, match="nested indirection"):
-        cfi_to_xpoint_string(book, "epubcfi(/6/2[item1]!/4/2[intro]/2!/2/1:0)")
+        cfi_to_xpoint_string(book, "epubcfi(/6/2[ref1]!/4/2[intro]/2!/2/1:0)")
 
 
 def test_wrong_spine_element_step_is_rejected(book: EpubMap) -> None:
     with pytest.raises(ResolutionError, match="spine element step"):
-        cfi_to_xpoint_string(book, "epubcfi(/8/2[item1]!/4/2[intro]/2/1:0)")
+        cfi_to_xpoint_string(book, "epubcfi(/8/2[ref1]!/4/2[intro]/2/1:0)")
 
 
 def test_package_only_cfi_is_rejected(book: EpubMap) -> None:
     with pytest.raises(ResolutionError, match="package level"):
-        cfi_to_xpoint_string(book, "epubcfi(/6/2[item1])")
+        cfi_to_xpoint_string(book, "epubcfi(/6/2[ref1])")
 
 
 def test_offset_on_element_step_is_rejected(book: EpubMap) -> None:
     with pytest.raises(ResolutionError, match="offset"):
-        cfi_to_xpoint_string(book, "epubcfi(/6/2[item1]!/4/2[intro]/2:0)")
+        cfi_to_xpoint_string(book, "epubcfi(/6/2[ref1]!/4/2[intro]/2:0)")
 
 
 def test_unresolvable_element_step_is_rejected(book: EpubMap) -> None:
     with pytest.raises(ResolutionError):
-        cfi_to_xpoint_string(book, "epubcfi(/6/2[item1]!/4/2[intro]/98/1:0)")
+        cfi_to_xpoint_string(book, "epubcfi(/6/2[ref1]!/4/2[intro]/98/1:0)")
 
 
 def test_unresolvable_xpath_is_rejected(book: EpubMap) -> None:
@@ -151,14 +151,14 @@ def test_unresolvable_xpath_is_rejected(book: EpubMap) -> None:
 
 
 def test_range_string_rejected_by_single_cfi_helper(book: EpubMap) -> None:
-    rng = "epubcfi(/6/2[item1]!/4/2[intro]/2/1,:0,:5)"
+    rng = "epubcfi(/6/2[ref1]!/4/2[intro]/2/1,:0,:5)"
     with pytest.raises(ResolutionError, match="range"):
         cfi_to_xpoint_string(book, rng)
 
 
 def test_single_cfi_rejected_by_range_helper(book: EpubMap) -> None:
     with pytest.raises(ResolutionError, match="range"):
-        cfi_to_xpoint_range_strings(book, "epubcfi(/6/2[item1]!/4/2[intro]/2/1:0)")
+        cfi_to_xpoint_range_strings(book, "epubcfi(/6/2[ref1]!/4/2[intro]/2/1:0)")
 
 
 # --------------------------------------------------------------------------------------
@@ -172,13 +172,14 @@ def _assert_parseable(cfi_str: str) -> None:
 
 
 def test_range_same_element_same_chunk(book: EpubMap) -> None:
-    # Both ends in p[1] gap_0: only the offset differs, so the whole path is the parent.
+    # Both ends in p[1] gap_0: only the offset differs, but the subpaths still keep the
+    # final text step (bare-offset subpaths break common resolvers).
     cfi = xpoint_range_to_cfi_string(
         book,
         "/body/DocFragment[1]/body/div/p[1]/text().0",
         "/body/DocFragment[1]/body/div/p[1]/text().5",
     )
-    assert cfi == "epubcfi(/6/2[item1]!/4/2[intro]/2/1,:0,:5)"
+    assert cfi == "epubcfi(/6/2[ref1]!/4/2[intro]/2,/1:0,/1:5)"
     _assert_parseable(cfi)
 
 
@@ -189,7 +190,7 @@ def test_range_same_doc_different_elements(book: EpubMap) -> None:
         "/body/DocFragment[1]/body/div/p[1]/text().0",
         "/body/DocFragment[1]/body/div/p[3]/text().2",
     )
-    assert cfi == "epubcfi(/6/2[item1]!/4/2[intro],/2/1:0,/6/1:2)"
+    assert cfi == "epubcfi(/6/2[ref1]!/4/2[intro],/2/1:0,/6/1:2)"
     _assert_parseable(cfi)
 
 
@@ -201,7 +202,7 @@ def test_range_cross_spine_item_parent_is_spine_element_step_only(book: EpubMap)
         "/body/DocFragment[1]/body/div/p[1]/text().0",
         "/body/DocFragment[2]/body/p/a/text().1",
     )
-    assert cfi == "epubcfi(/6,/2[item1]!/4/2[intro]/2/1:0,/4[item2]!/4/4/2/1:1)"
+    assert cfi == "epubcfi(/6,/2[ref1]!/4/2[intro]/2/1:0,/4[ref2]!/4/4/2/1:1)"
     _assert_parseable(cfi)
 
 
@@ -211,7 +212,7 @@ def test_range_zero_length_keeps_offset_in_both_ends(book: EpubMap) -> None:
         "/body/DocFragment[1]/body/div/p[1]/text().2",
         "/body/DocFragment[1]/body/div/p[1]/text().2",
     )
-    assert cfi == "epubcfi(/6/2[item1]!/4/2[intro]/2/1,:2,:2)"
+    assert cfi == "epubcfi(/6/2[ref1]!/4/2[intro]/2,/1:2,/1:2)"
     _assert_parseable(cfi)
 
 
