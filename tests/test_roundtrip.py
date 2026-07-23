@@ -1,10 +1,11 @@
 """Exhaustive xpoint <-> CFI <-> xpoint round-trip sweep over the fixture book.
 
-For every spine item, every element under ``<body>``, every non-empty text chunk, and a
-sample of code-point offsets, ``xpoint -> cfi -> xpoint`` must be the identity modulo
-``[1]`` xpath normalization. Every element also round-trips as a bare element boundary.
-Finally, within one spine item, ordering the generated positions by :meth:`Cfi.sort_key`
-must agree with their true document order (their absolute offset in the body text).
+For every spine item, every element under ``<body>``, every crengine-countable text
+chunk, and a sample of **collapsed** code-point offsets (the space xpointers actually
+index), ``xpoint -> cfi -> xpoint`` must be the identity modulo ``[1]`` xpath
+normalization. Every element also round-trips as a bare element boundary. Finally, within
+one spine item, ordering the generated positions by :meth:`Cfi.sort_key` must agree with
+their true document order (their absolute offset in the body text).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from xpoint_cfi import (
     normalize_xpath,
     xpoint_to_cfi,
 )
+from xpoint_cfi.crengine_text import collapse, is_countable
 from xpoint_cfi.epub_map import _Element  # pyright: ignore[reportPrivateUsage]
 
 EMOJI = "\U0001f600"
@@ -31,9 +33,22 @@ def book(simple_book: bytes) -> EpubMap:
     return EpubMap.from_bytes(simple_book)
 
 
+@pytest.fixture
+def whitespace_book() -> EpubMap:
+    # Multi-space runs, a leading whitespace-only chunk, tabs/newlines, and an inline
+    # element whose surrounding text has collapsible runs — so the sweep exercises the
+    # collapsed<->raw offset mapping, not just identity cases.
+    body = "<p>one  two   three</p><p>\n <span>mid</span>  tail  end</p><p>a\t\tb\n\nc</p>"
+    return EpubMap.from_bytes(build_epub({"w.xhtml": xhtml_doc("W", body)}))
+
+
 def _elements_under_body(nm: NodeMap) -> list[_Element]:
     body = nm.element_by_xpath(normalize_xpath("/body"))
     return [el for el in body.iter() if not callable(el.tag)]
+
+
+def _countable_chunks(nm: NodeMap, elem: _Element):
+    return [c for c in nm.chunks(elem) if is_countable(c.text)]
 
 
 def _sample_offsets(length: int) -> list[int]:
@@ -50,15 +65,15 @@ def _assert_same_position(a: XPoint, b: XPoint) -> None:
     assert a.has_text_position == b.has_text_position
 
 
-def test_text_position_round_trip_is_identity(book: EpubMap) -> None:
+def _sweep_text_positions(book: EpubMap) -> int:
     checked = 0
     for spine_index in range(1, book.spine_count + 1):
         nm = book.doc(spine_index)
         for elem in _elements_under_body(nm):
             xpath = nm.xpath_for_element(elem)
-            non_empty = [c for c in nm.chunks(elem) if c.text]
-            for node_index, chunk in enumerate(non_empty, start=1):
-                for offset in _sample_offsets(len(chunk.text)):
+            for node_index, chunk in enumerate(_countable_chunks(nm, elem), start=1):
+                collapsed = collapse(chunk.text)
+                for offset in _sample_offsets(len(collapsed)):
                     original = XPoint(
                         doc_fragment_index=spine_index,
                         xpath=xpath,
@@ -69,7 +84,15 @@ def test_text_position_round_trip_is_identity(book: EpubMap) -> None:
                     back = cfi_to_xpoint(book, xpoint_to_cfi(book, original))
                     _assert_same_position(original, back)
                     checked += 1
-    assert checked > 0
+    return checked
+
+
+def test_text_position_round_trip_is_identity(book: EpubMap) -> None:
+    assert _sweep_text_positions(book) > 0
+
+
+def test_text_position_round_trip_over_whitespace_runs(whitespace_book: EpubMap) -> None:
+    assert _sweep_text_positions(whitespace_book) > 0
 
 
 def test_element_boundary_round_trip_is_identity(book: EpubMap) -> None:
@@ -91,22 +114,21 @@ def test_element_boundary_round_trip_is_identity(book: EpubMap) -> None:
     assert checked > 0
 
 
-def test_cfi_sort_key_agrees_with_document_order(book: EpubMap) -> None:
+def test_cfi_sort_key_agrees_with_document_order(whitespace_book: EpubMap) -> None:
+    book = whitespace_book
     for spine_index in range(1, book.spine_count + 1):
         nm = book.doc(spine_index)
         positions: list[tuple[Cfi, int]] = []
         for elem in _elements_under_body(nm):
             xpath = nm.xpath_for_element(elem)
-            non_empty = [c for c in nm.chunks(elem) if c.text]
-            for node_index, chunk in enumerate(non_empty, start=1):
-                for offset in _sample_offsets(len(chunk.text)):
+            for node_index, chunk in enumerate(_countable_chunks(nm, elem), start=1):
+                collapsed = collapse(chunk.text)
+                for offset in _sample_offsets(len(collapsed)):
                     xp = XPoint(spine_index, xpath, node_index, offset, has_text_position=True)
                     cfi = xpoint_to_cfi(book, xp)
                     odd, utf16 = nm.text_position_to_cfi(elem, node_index, offset)
                     absolute = len(nm.extract_text(None, (elem, odd, utf16)))
                     positions.append((cfi, absolute))
-        # Sorting by the CFI document-order key must not reorder positions relative to
-        # their absolute offset in the body text stream.
         by_key = sorted(positions, key=lambda pair: pair[0].sort_key())
         offsets = [absolute for _, absolute in by_key]
         assert offsets == sorted(offsets)

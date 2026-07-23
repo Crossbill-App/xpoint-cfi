@@ -13,7 +13,11 @@ converters:
   processing instructions are invisible to CFI (they neither count as element children
   nor split a chunk) even though lxml attaches their following text to a ``.tail``.
   Crengine likewise drops comments and merges adjacent text, so xpointer ``text()[N]``
-  is mapped onto the *N-th non-empty chunk* treated as a single text node.
+  is mapped onto the *N-th countable chunk* (a chunk with at least one non-whitespace
+  character) treated as a single text node — crengine drops whitespace-only text nodes,
+  so those are skipped when counting. Within a chunk, xpointer offsets index crengine's
+  *collapsed* text (see :mod:`xpoint_cfi.crengine_text`) while CFI offsets index the raw
+  source, so the two are bridged per chunk.
 
 This module performs no string parsing of xpointers or CFIs; it consumes the value
 objects produced by :mod:`xpoint_cfi.xpoint` and :mod:`xpoint_cfi.cfi`.
@@ -32,6 +36,7 @@ from typing import TYPE_CHECKING
 from lxml import etree
 
 from .cfi import Step
+from .crengine_text import collapse_with_map, is_countable, raw_to_collapsed
 from .exceptions import EpubStructureError, ResolutionError
 
 if TYPE_CHECKING:
@@ -310,46 +315,89 @@ class NodeMap:
         result.append(Chunk(odd_index=2 * seen_elements + 1, parts=tuple(current)))
         return tuple(result)
 
-    def _non_empty_chunks(self, elem: _Element) -> tuple[Chunk, ...]:
-        return tuple(chunk for chunk in self.chunks(elem) if chunk.text)
+    def _countable_chunks(self, elem: _Element) -> tuple[Chunk, ...]:
+        """Return the chunks crengine keeps as text nodes (at least one non-ws char)."""
+        return tuple(chunk for chunk in self.chunks(elem) if is_countable(chunk.text))
+
+    def has_countable_text(self, elem: _Element) -> bool:
+        """Return ``True`` when ``elem`` has at least one crengine-countable text chunk.
+
+        An element with none (e.g. ``<p><img/></p>``) has no ``text()`` node crengine
+        can address; an xpointer's ``text()``/``.offset`` on such an element degrades to
+        an element boundary. Public so converters need not reach into chunk internals.
+        """
+        return any(is_countable(chunk.text) for chunk in self.chunks(elem))
+
+    @staticmethod
+    def _in_pre(elem: _Element) -> bool:
+        """Return ``True`` when ``elem`` or an ancestor is a ``<pre>`` element.
+
+        crengine does not collapse whitespace inside ``white-space:pre`` content; a
+        ``<pre>`` local-name ancestor is the structural (non-CSS) signal for it. CSS-driven
+        ``white-space:pre`` on other elements is out of scope and not detected here.
+        """
+        node: _Element | None = elem
+        while node is not None:
+            if _is_element(node) and _local_name(node) == "pre":
+                return True
+            node = node.getparent()
+        return False
 
     def text_position_to_cfi(
         self, elem: _Element, text_node_index: int, char_offset: int
     ) -> tuple[int, int]:
         """Map an xpointer ``text()[N].offset`` to a CFI ``(odd_index, utf16_offset)``.
 
+        ``text_node_index`` counts crengine-countable chunks (whitespace-only chunks are
+        invisible). ``char_offset`` is a code-point offset into crengine's *collapsed*
+        text; it is translated to the raw source position (via
+        :func:`~xpoint_cfi.crengine_text.collapse_with_map`) and then to a UTF-16 offset,
+        which is what a CFI stores. Inside a ``<pre>`` element no collapsing happens and
+        the offset is used against the raw text directly.
+
         Raises:
-            ResolutionError: if ``text_node_index`` exceeds the number of non-empty text
-                chunks, or ``char_offset`` (code points) exceeds the chunk length.
+            ResolutionError: if ``text_node_index`` exceeds the number of countable text
+                chunks, or ``char_offset`` exceeds the chunk's (collapsed) length.
         """
-        non_empty = self._non_empty_chunks(elem)
-        if text_node_index < 1 or text_node_index > len(non_empty):
+        countable = self._countable_chunks(elem)
+        if text_node_index < 1 or text_node_index > len(countable):
             raise ResolutionError(
                 f"text()[{text_node_index}]",
-                f"element has {len(non_empty)} non-empty text chunk(s)",
+                f"element has {len(countable)} countable text chunk(s)",
             )
-        chunk = non_empty[text_node_index - 1]
+        chunk = countable[text_node_index - 1]
         text = chunk.text
-        if char_offset < 0 or char_offset > len(text):
+        if self._in_pre(elem):
+            if char_offset < 0 or char_offset > len(text):
+                raise ResolutionError(
+                    f"text()[{text_node_index}].{char_offset}",
+                    f"offset exceeds text-node length ({len(text)} code points)",
+                )
+            return chunk.odd_index, cp_to_utf16(text, char_offset)
+        collapsed, pos = collapse_with_map(text)
+        if char_offset < 0 or char_offset > len(collapsed):
             raise ResolutionError(
                 f"text()[{text_node_index}].{char_offset}",
-                f"offset exceeds text-node length ({len(text)} code points)",
+                f"offset exceeds collapsed text-node length ({len(collapsed)} code points)",
             )
-        return chunk.odd_index, cp_to_utf16(text, char_offset)
+        raw_cp = pos[char_offset]
+        return chunk.odd_index, cp_to_utf16(text, raw_cp)
 
     def cfi_to_text_position(
         self, elem: _Element, odd_index: int, utf16_offset: int
     ) -> tuple[int, int]:
         """Map a CFI ``(odd_index, utf16_offset)`` to an xpointer ``(text_node, offset)``.
 
-        The returned ``char_offset`` is measured in code points. Pointing at an empty
-        chunk is permitted only with ``utf16_offset == 0`` (a best-effort element-edge
-        location), yielding the count of non-empty chunks up to that gap, clamped to 1.
+        The returned ``char_offset`` is measured in code points **in crengine's collapsed
+        space** (the coordinate an xpointer uses), except inside a ``<pre>`` element where
+        raw and collapsed coincide. Pointing at a whitespace-only (non-countable) chunk is
+        permitted only with ``utf16_offset == 0`` (a best-effort element-edge location),
+        yielding the count of countable chunks up to that gap, clamped to 1.
 
         Raises:
-            ResolutionError: if ``odd_index`` is even or out of the gap range, if an
-                empty chunk is addressed with a non-zero offset, or if ``utf16_offset``
-                is invalid for the chunk text.
+            ResolutionError: if ``odd_index`` is even or out of the gap range, if a
+                whitespace-only chunk is addressed with a non-zero offset, or if
+                ``utf16_offset`` is invalid for the chunk text.
         """
         if odd_index < 1 or odd_index % 2 == 0:
             raise ResolutionError(f"/{odd_index}", "text-node index must be odd and >= 1")
@@ -359,15 +407,19 @@ class NodeMap:
             raise ResolutionError(
                 f"/{odd_index}", f"gap index out of range (element has {len(all_chunks)} gaps)"
             )
-        preceding_non_empty = sum(1 for c in all_chunks if c.text and c.odd_index <= odd_index)
-        if not chunk.text:
+        preceding_countable = sum(
+            1 for c in all_chunks if is_countable(c.text) and c.odd_index <= odd_index
+        )
+        if not is_countable(chunk.text):
             if utf16_offset != 0:
                 raise ResolutionError(
                     f"/{odd_index}:{utf16_offset}",
-                    "empty text chunk addressed with a non-zero offset",
+                    "empty or whitespace-only text chunk addressed with a non-zero offset",
                 )
-            return max(preceding_non_empty, 1), 0
-        return preceding_non_empty, utf16_to_cp(chunk.text, utf16_offset)
+            return max(preceding_countable, 1), 0
+        raw_cp = utf16_to_cp(chunk.text, utf16_offset)
+        char_offset = raw_cp if self._in_pre(elem) else raw_to_collapsed(chunk.text, raw_cp)
+        return preceding_countable, char_offset
 
     # -- text extraction ---------------------------------------------------------------
 

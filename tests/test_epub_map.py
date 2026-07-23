@@ -352,7 +352,7 @@ def test_emoji_utf16_diverges_from_code_points(chap1: NodeMap) -> None:
 
 def test_text_position_index_too_large(chap1: NodeMap) -> None:
     p = chap1.element_by_xpath(normalize_xpath("/body/div/p[3]"))
-    with pytest.raises(ResolutionError, match="non-empty text chunk"):
+    with pytest.raises(ResolutionError, match="countable text chunk"):
         chap1.text_position_to_cfi(p, 5, 0)
 
 
@@ -502,3 +502,107 @@ def test_doc_recovers_from_malformed_xhtml() -> None:
     data = build_epub({"a.xhtml": xhtml_doc("A", "<p>broken <b>bold</p>")})
     nm = EpubMap.from_bytes(data).doc(1)
     assert "bold" in nm.extract_text(None, None)
+
+
+# --------------------------------------------------------------------------------------
+# crengine whitespace fidelity: countable chunks, collapse mapping, <pre>, best-effort
+# --------------------------------------------------------------------------------------
+
+
+def _doc_from_body(body: str) -> NodeMap:
+    return EpubMap.from_bytes(build_epub({"a.xhtml": xhtml_doc("A", body)})).doc(1)
+
+
+def test_leading_whitespace_only_chunk_is_not_counted() -> None:
+    # gap_0 is "\n" (whitespace only -> dropped by crengine); the countable text is the
+    # tail after <span>, which is text()[1] and lives at CFI odd index 3.
+    nm = _doc_from_body("<p>\n<span>x</span>\n Keep reading</p>")
+    p = nm.element_by_xpath(normalize_xpath("/body/p"))
+    chunks = nm.chunks(p)
+    assert [(c.odd_index, c.text) for c in chunks] == [
+        (1, "\n"),
+        (3, "\n Keep reading"),
+    ]
+    # text()[1] maps to odd_index 3 (the leading ws-only chunk is invisible).
+    odd, _ = nm.text_position_to_cfi(p, 1, 0)
+    assert odd == 3
+
+
+def test_single_space_chunk_is_not_counted() -> None:
+    # [(1, " "), (3, "long text")] -> text()[1] is the second chunk.
+    nm = _doc_from_body("<p> <span>y</span> long text</p>")
+    p = nm.element_by_xpath(normalize_xpath("/body/p"))
+    assert [(c.odd_index, c.text) for c in nm.chunks(p)] == [(1, " "), (3, " long text")]
+    odd, _ = nm.text_position_to_cfi(p, 1, 0)
+    assert odd == 3
+
+
+def test_double_space_offset_maps_collapsed_to_raw_utf16() -> None:
+    # Raw "a  b c" (double space after 'a'); collapsed is "a b c". A KOReader offset is
+    # in collapsed space: collapsed index 2 is 'b', whose raw code-point index is 3, so
+    # the CFI UTF-16 offset must be 3 (no astral chars -> utf16 == code points).
+    nm = _doc_from_body("<p>a  b c</p>")
+    p = nm.element_by_xpath(normalize_xpath("/body/p"))
+    assert nm.chunks(p)[0].text == "a  b c"
+    assert nm.text_position_to_cfi(p, 1, 0) == (1, 0)
+    assert nm.text_position_to_cfi(p, 1, 2) == (1, 3)  # collapsed 'b' -> raw index 3
+    assert nm.text_position_to_cfi(p, 1, 4) == (1, 5)  # collapsed 'c' -> raw index 5
+    # Reverse: raw UTF-16 offset 3 -> collapsed code-point offset 2.
+    assert nm.cfi_to_text_position(p, 1, 3) == (1, 2)
+    assert nm.cfi_to_text_position(p, 1, 5) == (1, 4)
+
+
+def test_collapsed_offset_round_trip_over_double_spaces() -> None:
+    nm = _doc_from_body("<p>one  two   three</p>")
+    p = nm.element_by_xpath(normalize_xpath("/body/p"))
+    from xpoint_cfi.crengine_text import collapse
+
+    collapsed = collapse(nm.chunks(p)[0].text)
+    for offset in range(len(collapsed) + 1):
+        odd, utf16 = nm.text_position_to_cfi(p, 1, offset)
+        assert nm.cfi_to_text_position(p, odd, utf16) == (1, offset)
+
+
+def test_pre_element_uses_identity_mapping() -> None:
+    # Inside <pre> the double space is NOT collapsed, so the offset is a raw offset.
+    nm = _doc_from_body("<pre>a  b c</pre>")
+    pre = nm.element_by_xpath(normalize_xpath("/body/pre"))
+    # collapsed index would move 'b' to 2, but in <pre> offset 3 is 'b' directly.
+    assert nm.text_position_to_cfi(pre, 1, 3) == (1, 3)
+    assert nm.cfi_to_text_position(pre, 1, 3) == (1, 3)
+    # A full raw sweep round-trips as identity (no collapse).
+    text = nm.chunks(pre)[0].text
+    for offset in range(len(text) + 1):
+        odd, utf16 = nm.text_position_to_cfi(pre, 1, offset)
+        assert nm.cfi_to_text_position(pre, odd, utf16) == (1, offset)
+
+
+def test_pre_detected_through_ancestor() -> None:
+    nm = _doc_from_body("<pre><code>a  b</code></pre>")
+    code = nm.element_by_xpath(normalize_xpath("/body/pre/code"))
+    # 'b' is at raw index 3; identity mapping means the CFI offset is also 3.
+    assert nm.text_position_to_cfi(code, 1, 3) == (1, 3)
+
+
+def test_cfi_to_text_position_whitespace_only_chunk_offset_zero() -> None:
+    # gap_0 is a lone " " (not countable); offset 0 is a best-effort element edge.
+    nm = _doc_from_body("<p> <span>y</span>tail</p>")
+    p = nm.element_by_xpath(normalize_xpath("/body/p"))
+    assert nm.cfi_to_text_position(p, 1, 0) == (1, 0)
+
+
+def test_cfi_to_text_position_whitespace_only_chunk_nonzero_offset_raises() -> None:
+    nm = _doc_from_body("<p> <span>y</span>tail</p>")
+    p = nm.element_by_xpath(normalize_xpath("/body/p"))
+    with pytest.raises(ResolutionError, match="whitespace-only"):
+        nm.cfi_to_text_position(p, 1, 1)
+
+
+def test_has_countable_text() -> None:
+    nm = _doc_from_body("<p>text</p><p><img/></p><p> </p>")
+    p1 = nm.element_by_xpath(normalize_xpath("/body/p[1]"))
+    p2 = nm.element_by_xpath(normalize_xpath("/body/p[2]"))
+    p3 = nm.element_by_xpath(normalize_xpath("/body/p[3]"))
+    assert nm.has_countable_text(p1)
+    assert not nm.has_countable_text(p2)  # only an <img/>, no text node
+    assert not nm.has_countable_text(p3)  # whitespace only
