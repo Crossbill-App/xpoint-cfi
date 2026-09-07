@@ -19,6 +19,7 @@ MatchConfidence.HIGHLIGHT_ONLY: ...`` — rather than enumerate the cases.
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from enum import IntEnum
@@ -82,18 +83,33 @@ class QuoteMatch:
     confidence: MatchConfidence
 
 
-def find_quote(text: str, highlight: str, before: str = "", after: str = "") -> QuoteMatch:
+def find_quote(
+    text: str,
+    highlight: str,
+    before: str = "",
+    after: str = "",
+    *,
+    within: tuple[int, int] | None = None,
+) -> QuoteMatch:
     """Find ``highlight`` in ``text``, using ``before``/``after`` to disambiguate.
 
     An empty ``highlight`` anchors a zero-length point at the boundary between the two
     contexts, which is how a Readium locator expresses a position rather than a
     selection.
 
+    ``within`` narrows *where the match may land* to a code-point window of ``text``,
+    without narrowing ``text`` itself. That distinction matters: a locator's CSS
+    selector often names the very element the quote sits in, whose text stops exactly
+    where the contexts begin — searching only that element would leave ``before`` and
+    ``after`` with nothing to confirm against, and every match would come back as
+    :attr:`MatchConfidence.HIGHLIGHT_ONLY`.
+
     Args:
         text: The text to search, in its raw document form.
         highlight: The quote to find.
         before: Text that immediately precedes the quote in the source document.
         after: Text that immediately follows it.
+        within: Optional ``(start, end)`` window of ``text`` the match must fall inside.
 
     Returns:
         A :class:`QuoteMatch` with offsets into ``text`` and a confidence grade.
@@ -106,15 +122,26 @@ def find_quote(text: str, highlight: str, before: str = "", after: str = "") -> 
     needle = normalize_for_comparison(highlight)
     lead = normalize_for_comparison(before)
     trail = normalize_for_comparison(after)
+    window = _normalized_window(source, len(haystack), within)
 
     if not needle:
-        return _anchor_point(haystack, source, lead, trail)
+        return _anchor_point(haystack, source, window, lead, trail)
 
-    occurrences = _occurrences(haystack, needle)
+    occurrences = _occurrences(haystack, needle, window, len(needle))
     if occurrences:
         index, confidence = _best_occurrence(haystack, occurrences, len(needle), lead, trail)
         return QuoteMatch(source[index], source[index + len(needle)], confidence)
-    return _fuzzy_match(haystack, source, needle)
+    return _fuzzy_match(haystack, source, window, needle)
+
+
+def _normalized_window(
+    source: tuple[int, ...], length: int, within: tuple[int, int] | None
+) -> tuple[int, int]:
+    """Translate a source-coordinate window into normalized-string coordinates."""
+    if within is None:
+        return (0, length)
+    start, end = within
+    return (bisect_left(source, start, hi=length), bisect_right(source, end, hi=length))
 
 
 # --------------------------------------------------------------------------------------
@@ -122,11 +149,17 @@ def find_quote(text: str, highlight: str, before: str = "", after: str = "") -> 
 # --------------------------------------------------------------------------------------
 
 
-def _occurrences(haystack: str, needle: str) -> list[int]:
-    """Return the start offsets of every occurrence of ``needle``, capped for sanity."""
+def _occurrences(haystack: str, needle: str, window: tuple[int, int], length: int) -> list[int]:
+    """Return the start offsets of every occurrence of ``needle`` fitting in ``window``.
+
+    Capped at :data:`_MAX_OCCURRENCES`: a quote appearing more often than that is
+    degenerate (a single space, one letter) and no amount of context makes it
+    trustworthy.
+    """
+    low, high = window
     found: list[int] = []
-    index = haystack.find(needle)
-    while index != -1 and len(found) < _MAX_OCCURRENCES:
+    index = haystack.find(needle, low)
+    while index != -1 and index + length <= high and len(found) < _MAX_OCCURRENCES:
         found.append(index)
         index = haystack.find(needle, index + 1)
     return found
@@ -183,18 +216,27 @@ def _best_occurrence(
 # --------------------------------------------------------------------------------------
 
 
-def _anchor_point(haystack: str, source: tuple[int, ...], lead: str, trail: str) -> QuoteMatch:
+def _anchor_point(
+    haystack: str, source: tuple[int, ...], window: tuple[int, int], lead: str, trail: str
+) -> QuoteMatch:
     """Anchor a zero-length position at the boundary between ``lead`` and ``trail``.
 
     The point is placed where ``lead`` ends (or, with no ``lead``, where ``trail``
     begins), so whitespace separating the two contexts falls on the ``lead`` side.
+
+    The context is searched for across the whole text and only the resulting *point* is
+    required to fall inside ``window`` — a point's context routinely reaches past the
+    element the selector named.
     """
+    whole = (0, len(haystack))
     if lead:
-        candidates = [index + len(lead) for index in _occurrences(haystack, lead)]
+        candidates = [index + len(lead) for index in _occurrences(haystack, lead, whole, len(lead))]
     elif trail:
-        candidates = _occurrences(haystack, trail)
+        candidates = _occurrences(haystack, trail, whole, len(trail))
     else:
         raise ResolutionError("<empty quote>", "no highlight and no context to anchor to")
+    low, high = window
+    candidates = [index for index in candidates if low <= index <= high]
     if not candidates:
         raise ResolutionError(_excerpt(lead or trail), "context text not found in scope")
 
@@ -209,27 +251,31 @@ def _anchor_point(haystack: str, source: tuple[int, ...], lead: str, trail: str)
     return QuoteMatch(source[candidates[0]], source[candidates[0]], confidence)
 
 
-def _fuzzy_match(haystack: str, source: tuple[int, ...], needle: str) -> QuoteMatch:
-    """Return the window of ``haystack`` most similar to ``needle``, or raise.
+def _fuzzy_match(
+    haystack: str, source: tuple[int, ...], window: tuple[int, int], needle: str
+) -> QuoteMatch:
+    """Return the part of ``window`` most similar to ``needle``, or raise.
 
-    The longest block the two strings share fixes the window's alignment; the window is
-    then taken to be the quote's own length around it and scored with a full diff. This
+    The longest block the two strings share fixes the alignment; the candidate is then
+    taken to be the quote's own length around it and scored with a full diff. This
     recovers quotes that drifted by an edit or two, and refuses anything less alike than
     :data:`_MIN_SIMILARITY`.
     """
-    blocks = SequenceMatcher(None, haystack, needle, autojunk=False).get_matching_blocks()
+    low, high = window
+    scoped = haystack[low:high]
+    blocks = SequenceMatcher(None, scoped, needle, autojunk=False).get_matching_blocks()
     longest = max(blocks, key=lambda block: block.size)
     if longest.size == 0:
         raise ResolutionError(_excerpt(needle), "quote not found in scope")
 
     start = max(0, longest.a - longest.b)
-    end = min(len(haystack), start + len(needle))
-    similarity = SequenceMatcher(None, haystack[start:end], needle, autojunk=False).ratio()
+    end = min(len(scoped), start + len(needle))
+    similarity = SequenceMatcher(None, scoped[start:end], needle, autojunk=False).ratio()
     if similarity < _MIN_SIMILARITY:
         raise ResolutionError(
             _excerpt(needle), f"quote not found in scope (best match {similarity:.2f})"
         )
-    return QuoteMatch(source[start], source[end], MatchConfidence.FUZZY)
+    return QuoteMatch(source[low + start], source[low + end], MatchConfidence.FUZZY)
 
 
 def _excerpt(text: str, limit: int = 60) -> str:

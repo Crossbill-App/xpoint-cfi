@@ -31,6 +31,16 @@ from .exceptions import (
     XpointCfiError,
     XPointParseError,
 )
+from .locator import (
+    Locator,
+    LocatorLocations,
+    LocatorMatch,
+    LocatorText,
+    locator_to_xpoint_range,
+    xpoint_range_to_locator,
+    xpoint_to_locator,
+)
+from .text_anchor import MatchConfidence
 from .verify import (
     VerificationResult,
     normalize_for_comparison,
@@ -47,6 +57,11 @@ __all__ = [
     "EpubMap",
     "EpubStructureError",
     "LocalPath",
+    "Locator",
+    "LocatorLocations",
+    "LocatorMatch",
+    "LocatorText",
+    "MatchConfidence",
     "NodeMap",
     "ResolutionError",
     "Step",
@@ -60,6 +75,7 @@ __all__ = [
     "cfi_to_xpoint",
     "cfi_to_xpoint_range_strings",
     "cfi_to_xpoint_string",
+    "locator_to_xpoint_range",
     "normalize_for_comparison",
     "normalize_whitespace",
     "normalize_xpath",
@@ -67,6 +83,8 @@ __all__ = [
     "verify_range",
     "xpoint_range_to_cfi",
     "xpoint_range_to_cfi_string",
+    "xpoint_range_to_locator",
     "xpoint_to_cfi",
     "xpoint_to_cfi_string",
+    "xpoint_to_locator",
 ]

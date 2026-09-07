@@ -244,6 +244,20 @@ class NodeMap:
 
     # -- element addressing ------------------------------------------------------------
 
+    @property
+    def root(self) -> _Element:
+        """Return the document element (``<html>``) of the parsed spine item."""
+        return self._root
+
+    @property
+    def body(self) -> _Element:
+        """Return the document's ``<body>`` element.
+
+        Raises:
+            ResolutionError: if the document element has no ``<body>`` child.
+        """
+        return self._find_body()
+
     def _find_body(self) -> _Element:
         body = _nth_child(self._root, 1, "body")
         if body is None:
