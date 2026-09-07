@@ -46,6 +46,10 @@ def test_spine_order_and_hrefs(simple_book: bytes) -> None:
     assert book.spine_idref(1) == "item1"
 
 
+def test_spine_media_type_comes_from_the_manifest(simple_book: bytes) -> None:
+    assert EpubMap.from_bytes(simple_book).spine_media_type(1) == "application/xhtml+xml"
+
+
 def test_spine_element_step_default_is_six(simple_book: bytes) -> None:
     assert EpubMap.from_bytes(simple_book).spine_element_step == 6
 

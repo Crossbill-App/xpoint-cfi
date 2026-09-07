@@ -46,6 +46,9 @@ _Element = etree._Element  # pyright: ignore[reportPrivateUsage]
 
 _CONTAINER_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
 
+# Assumed media type for a spine item whose manifest <item> omits @media-type.
+_DEFAULT_MEDIA_TYPE = "application/xhtml+xml"
+
 # Block-level HTML tags: text extraction inserts a "\n" separator when consecutive text
 # nodes belong to different block containers (matching KOReader's highlight export).
 _BLOCK_TAGS = frozenset(
@@ -112,7 +115,7 @@ def _local_name(node: _Element) -> str:
     return _local(node.tag)
 
 
-def _element_children(node: _Element) -> list[_Element]:
+def element_children(node: _Element) -> list[_Element]:
     """Return the real element children of ``node`` (comments and PIs excluded)."""
     return [child for child in node if _is_element(child)]
 
@@ -402,8 +405,13 @@ class NodeMap:
             return False
         return is_countable(chunk.text) or chunk.odd_index > 1
 
-    def _countable_chunks(self, elem: _Element) -> tuple[Chunk, ...]:
-        """Return the chunks crengine keeps as text nodes (see :meth:`_crengine_counts`)."""
+    def countable_chunks(self, elem: _Element) -> tuple[Chunk, ...]:
+        """Return the chunks crengine keeps as text nodes (see :meth:`_crengine_counts`).
+
+        These are exactly the chunks an xpointer ``text()[N]`` can address, in order;
+        every other chunk holds text crengine drops, which therefore has no xpointer
+        coordinate at all.
+        """
         return tuple(chunk for chunk in self.chunks(elem) if self._crengine_counts(chunk))
 
     @staticmethod
@@ -449,7 +457,7 @@ class NodeMap:
             ResolutionError: if ``text_node_index`` exceeds the number of countable text
                 chunks, or ``char_offset`` exceeds the chunk's crengine text length.
         """
-        countable = self._countable_chunks(elem)
+        countable = self.countable_chunks(elem)
         if not countable and text_node_index == 1 and char_offset == 0:
             return None
         if text_node_index < 1 or text_node_index > len(countable):
@@ -529,7 +537,7 @@ class NodeMap:
             running = 0
             previous_block: _Element | None = None
             for node, attr, text in locations:
-                block = self._block_ancestor(node if attr == "text" else _flow_parent(node))
+                block = self.block_ancestor(node if attr == "text" else _flow_parent(node))
                 if previous_block is not None and block is not previous_block:
                     # KOReader separates block elements with a newline when exporting
                     # highlight text; minified XHTML has no whitespace between blocks,
@@ -551,7 +559,7 @@ class NodeMap:
             )
         return self._text_index
 
-    def _block_ancestor(self, elem: _Element) -> _Element:
+    def block_ancestor(self, elem: _Element) -> _Element:
         """Return ``elem``'s nearest ancestor-or-self with a block-level tag.
 
         Cached per element; falls back to the document element when no block tag is
@@ -584,7 +592,7 @@ class NodeMap:
         return self._empty_gap_offset(elem, odd_index, index)
 
     def _empty_gap_offset(self, elem: _Element, odd_index: int, index: _TextIndex) -> int:
-        children = _element_children(elem)
+        children = element_children(elem)
         gap = (odd_index - 1) // 2
         if gap < len(children):
             following = {id(node) for node in children[gap].iter()}
@@ -630,6 +638,7 @@ class _SpineItem:
     idref: str
     href: str
     itemref_id: str | None
+    media_type: str
 
 
 class EpubMap:
@@ -690,7 +699,7 @@ class EpubMap:
         spine_el: _Element | None = None
         manifest_el: _Element | None = None
         spine_position = 0
-        for position, child in enumerate(_element_children(package), start=1):
+        for position, child in enumerate(element_children(package), start=1):
             name = _local_name(child)
             if name == "spine" and spine_el is None:
                 spine_el = child
@@ -702,14 +711,14 @@ class EpubMap:
         if spine_el is None:
             raise EpubStructureError("OPF package has no <spine>")
 
-        manifest: dict[str, str] = {}
+        manifest: dict[str, tuple[str, str]] = {}
         for item in manifest_el:
             if not _is_element(item) or _local_name(item) != "item":
                 continue
             item_id = item.get("id")
             href = item.get("href")
             if item_id is not None and href is not None:
-                manifest[item_id] = href
+                manifest[item_id] = (href, item.get("media-type") or _DEFAULT_MEDIA_TYPE)
 
         spine: list[_SpineItem] = []
         for itemref in spine_el:
@@ -718,12 +727,13 @@ class EpubMap:
             idref = itemref.get("idref")
             if idref is None:
                 raise EpubStructureError("spine <itemref> has no idref")
-            href = manifest.get(idref)
-            if href is None:
+            entry = manifest.get(idref)
+            if entry is None:
                 raise EpubStructureError(
                     f"spine itemref idref {idref!r} has no matching manifest <item>"
                 )
-            spine.append(_SpineItem(idref, self._resolve_href(href), itemref.get("id")))
+            href, media_type = entry
+            spine.append(_SpineItem(idref, self._resolve_href(href), itemref.get("id"), media_type))
         if not spine:
             raise EpubStructureError("spine has no itemrefs")
         return 2 * spine_position, spine
@@ -748,6 +758,15 @@ class EpubMap:
         """Return the zip path of the spine item at 1-based ``spine_index``."""
         self._check_spine_index(spine_index)
         return self._spine[spine_index - 1].href
+
+    def spine_media_type(self, spine_index: int) -> str:
+        """Return the manifest media type of the spine item at 1-based ``spine_index``.
+
+        Falls back to ``application/xhtml+xml`` when the manifest ``<item>`` carries no
+        ``media-type`` attribute.
+        """
+        self._check_spine_index(spine_index)
+        return self._spine[spine_index - 1].media_type
 
     def spine_idref(self, spine_index: int) -> str:
         """Return the manifest idref of the spine item at 1-based ``spine_index``."""
