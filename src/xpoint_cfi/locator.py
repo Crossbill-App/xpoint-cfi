@@ -47,6 +47,7 @@ validation asserts — but is not byte-identical to the original xpointers.
 
 from __future__ import annotations
 
+import urllib.parse
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
@@ -170,8 +171,9 @@ class Locator:
     """A Readium Locator pointing into one resource of a publication.
 
     Attributes:
-        href: The spine item's href, as :meth:`~xpoint_cfi.epub_map.EpubMap.spine_href`
-            reports it (a path inside the EPUB container).
+        href: The spine item's path inside the EPUB container, percent-encoded as a URI
+            reference — :meth:`~xpoint_cfi.epub_map.EpubMap.spine_href` reports the same
+            path decoded, for reading the archive.
         type: The resource's media type.
         title: Always ``None`` here; a navigation document would be needed to fill it.
         locations: Alternative expressions of the position.
@@ -302,7 +304,7 @@ def _build_locator(book: EpubMap, start: XPoint, end: XPoint, *, collapsed: bool
     )
 
     return Locator(
-        href=book.spine_href(spine_index),
+        href=_locator_href(book, spine_index),
         type=book.spine_media_type(spine_index),
         locations=LocatorLocations(
             progression=start_offset / len(resource_text) if resource_text else 0.0,
@@ -310,6 +312,19 @@ def _build_locator(book: EpubMap, start: XPoint, end: XPoint, *, collapsed: bool
         ),
         text=LocatorText(before=before, highlight=highlight, after=after),
     )
+
+
+def _locator_href(book: EpubMap, spine_index: int) -> str:
+    """Return the spine item's path as the URI a locator's ``href`` must be.
+
+    :meth:`~xpoint_cfi.epub_map.EpubMap.spine_href` reports the *decoded* archive path,
+    because that is what reads bytes out of the zip. A Readium ``href`` is a URI, so a
+    name holding a space or a non-ASCII character has to be percent-encoded before it
+    goes into a locator — ``OEBPS/ch 1.xhtml`` is not a URI reference, and a navigator
+    resolving it against the publication's base would mangle it. Path separators stay
+    literal.
+    """
+    return urllib.parse.quote(book.spine_href(spine_index), safe="/")
 
 
 def _common_ancestor(first: _Element, second: _Element) -> _Element:
@@ -387,7 +402,9 @@ def _spine_index_for_href(book: EpubMap, href: str) -> int:
     Matching is progressively more forgiving — the exact container path first, then the
     path with any fragment, query and leading slash removed, then the bare filename —
     because a reader's manifest may express the same resource relative to a different
-    base than :meth:`~xpoint_cfi.epub_map.EpubMap.spine_href` does.
+    base than :meth:`~xpoint_cfi.epub_map.EpubMap.spine_href` does. Each of those steps
+    tries both the percent-decoded and the literal form of the href (see
+    :func:`_href_forms`).
 
     Raises:
         ResolutionError: if no spine item matches.
@@ -396,20 +413,37 @@ def _spine_index_for_href(book: EpubMap, href: str) -> int:
     if href in candidates:
         return candidates.index(href) + 1
 
-    trimmed = href.split("#", 1)[0].split("?", 1)[0].lstrip("/")
-    for index, candidate in enumerate(candidates, start=1):
-        if candidate == trimmed or candidate.endswith("/" + trimmed):
-            return index
+    forms = _href_forms(href)
+    for form in forms:
+        for index, candidate in enumerate(candidates, start=1):
+            if candidate == form or candidate.endswith("/" + form):
+                return index
 
-    name = trimmed.rsplit("/", 1)[-1]
-    matches = [
-        index
-        for index, candidate in enumerate(candidates, start=1)
-        if candidate.rsplit("/", 1)[-1] == name
-    ]
-    if len(matches) == 1:
-        return matches[0]
+    for form in forms:
+        name = form.rsplit("/", 1)[-1]
+        matches = [
+            index
+            for index, candidate in enumerate(candidates, start=1)
+            if candidate.rsplit("/", 1)[-1] == name
+        ]
+        if len(matches) == 1:
+            return matches[0]
     raise ResolutionError(href, "href does not name exactly one spine item")
+
+
+def _href_forms(href: str) -> list[str]:
+    """Return the container paths ``href`` could name, percent-decoded first.
+
+    A locator's ``href`` is a URI, so a spine file whose name holds a space or a
+    non-ASCII character arrives percent-encoded (``chapter%201.xhtml``) while
+    :meth:`~xpoint_cfi.epub_map.EpubMap.spine_href` reports the decoded archive path.
+    Decoding is therefore tried first. The literal form is kept as a fallback for the
+    lenient producer that sends an already-decoded path — and for the pathological
+    archive whose entry name really does contain a percent sign.
+    """
+    trimmed = href.split("#", 1)[0].split("?", 1)[0].lstrip("/")
+    decoded = urllib.parse.unquote(trimmed)
+    return [decoded] if decoded == trimmed else [decoded, trimmed]
 
 
 def _scope_element(node: NodeMap, selector: str | None) -> _Element:

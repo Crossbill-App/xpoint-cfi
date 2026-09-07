@@ -121,6 +121,12 @@ weak matches instead of storing a bad position.
 `xpoint_to_locator` handles a single position: `text.highlight` is `""` and the two
 contexts meet at the point.
 
+`href` is the spine item's container path **percent-encoded as a URI reference** — that
+is what the Locator model requires and what a navigator resolves against the publication
+base, so a file named `ch 1.xhtml` becomes `OEBPS/ch%201.xhtml`. `EpubMap.spine_href()`
+reports the same path decoded, for reading the archive. Resolving a locator accepts
+either form.
+
 ## API overview
 
 Everything is exported from the top-level `xpoint_cfi` package.

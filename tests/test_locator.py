@@ -8,6 +8,8 @@ and repeated phrases that only ``before``/``after`` can tell apart.
 
 from __future__ import annotations
 
+import urllib.parse
+
 import pytest
 from conftest import build_epub, xhtml_doc
 
@@ -364,6 +366,84 @@ def test_href_matching_tolerates_different_bases(book: EpubMap, href: str) -> No
     )
     match = locator_to_xpoint_range(book, locator)
     assert match.xpoint_range.start.doc_fragment_index == 1
+
+
+# --------------------------------------------------------------------------------------
+# Percent-encoded hrefs
+# --------------------------------------------------------------------------------------
+
+# A Readium locator's href is a URI, so a spine file whose name holds a space or a
+# non-ASCII character reaches us percent-encoded, while spine_href reports the decoded
+# archive path.
+_SPACED = "ch 1.xhtml"
+_ACCENTED = "chapître.xhtml"
+
+
+@pytest.fixture
+def odd_named_book() -> EpubMap:
+    return EpubMap.from_bytes(
+        build_epub(
+            {
+                _SPACED: xhtml_doc("A", "<p>Hello brave new world.</p>"),
+                _ACCENTED: xhtml_doc("B", "<p>Deuxieme chapitre ici.</p>"),
+            }
+        )
+    )
+
+
+def test_emitted_href_is_a_percent_encoded_uri(odd_named_book: EpubMap) -> None:
+    spaced = xpoint_to_locator(odd_named_book, "/body/DocFragment[1]/body/p/text().0")
+    accented = xpoint_to_locator(odd_named_book, "/body/DocFragment[2]/body/p/text().0")
+    assert spaced.href == "OEBPS/ch%201.xhtml"
+    assert accented.href == "OEBPS/chap%C3%AEtre.xhtml"
+
+
+def test_emitted_href_is_what_the_archive_path_encodes_to(odd_named_book: EpubMap) -> None:
+    # The decoded form stays available on EpubMap; the locator carries the URI form.
+    assert odd_named_book.spine_href(1) == "OEBPS/ch 1.xhtml"
+    assert urllib.parse.unquote(
+        xpoint_to_locator(odd_named_book, "/body/DocFragment[1]/body/p/text().0").href
+    ) == odd_named_book.spine_href(1)
+
+
+@pytest.mark.parametrize(
+    ("href", "quote", "spine_index"),
+    [
+        # Percent-encoded, as a Readium navigator sends it.
+        ("OEBPS/ch%201.xhtml", "Hello brave", 1),
+        ("ch%201.xhtml", "Hello brave", 1),
+        ("/OEBPS/ch%201.xhtml", "Hello brave", 1),
+        ("OEBPS/ch%201.xhtml#frag", "Hello brave", 1),
+        ("OEBPS/chap%C3%AEtre.xhtml", "Deuxieme", 2),
+        ("chap%C3%AEtre.xhtml", "Deuxieme", 2),
+        # Already decoded, as a lenient producer may send it. Both forms are accepted.
+        ("OEBPS/ch 1.xhtml", "Hello brave", 1),
+        ("ch 1.xhtml", "Hello brave", 1),
+        ("OEBPS/chapître.xhtml", "Deuxieme", 2),
+    ],
+)
+def test_href_resolves_encoded_or_decoded(
+    odd_named_book: EpubMap, href: str, quote: str, spine_index: int
+) -> None:
+    locator = Locator(href=href, type="application/xhtml+xml", text=LocatorText(highlight=quote))
+    match = locator_to_xpoint_range(odd_named_book, locator)
+    assert match.xpoint_range.start.doc_fragment_index == spine_index
+
+
+@pytest.mark.parametrize("fragment", [1, 2])
+def test_odd_named_href_round_trips(odd_named_book: EpubMap, fragment: int) -> None:
+    quote_end = 11 if fragment == 1 else 8
+    locator = xpoint_range_to_locator(
+        odd_named_book,
+        f"/body/DocFragment[{fragment}]/body/p/text().0",
+        f"/body/DocFragment[{fragment}]/body/p/text().{quote_end}",
+    )
+    match = locator_to_xpoint_range(odd_named_book, locator)
+    assert match.xpoint_range.start.doc_fragment_index == fragment
+    assert (
+        extract_between(odd_named_book, match.xpoint_range.start, match.xpoint_range.end)
+        == locator.text.highlight
+    )
 
 
 def test_segment_flattening_reproduces_extract_text(book: EpubMap) -> None:
