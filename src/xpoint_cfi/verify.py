@@ -5,17 +5,20 @@ structure is unusual. Callers (e.g. crossbill) store the highlighted text alongs
 xpointer, so :func:`verify_range` re-extracts the document text a CFI range denotes and
 compares it — after whitespace normalization — against that stored text. A mismatch is a
 signal that the conversion (or the stored range) is untrustworthy, not a hard error.
+
+The normalization helpers both sides are compared through live in
+:mod:`xpoint_cfi.normalize` and are re-exported here, where callers first meet them.
 """
 
 from __future__ import annotations
 
-import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .cfi import CfiRange, parse_cfi
 from .convert import cfi_range_to_xpoint_range
 from .exceptions import ResolutionError
+from .normalize import normalize_for_comparison, normalize_whitespace
 from .text_range import extract_between
 
 if TYPE_CHECKING:
@@ -41,29 +44,6 @@ class VerificationResult:
 
     ok: bool
     extracted_text: str
-
-
-def normalize_whitespace(s: str) -> str:
-    """Collapse every run of whitespace to a single space and strip the ends."""
-    return " ".join(s.split())
-
-
-# Characters dropped entirely before comparison: soft hyphen and zero-width marks.
-_ZERO_WIDTH = {"\u00ad", "\u200b", "\u200c", "\u200d", "\ufeff"}
-_NBSP = "\u00a0"
-
-
-def normalize_for_comparison(s: str) -> str:
-    """Normalize text so cosmetic engine differences don't cause mismatches.
-
-    NFC-normalize, drop soft hyphens and zero-width characters (crengine keeps soft
-    hyphens in its DOM text but strips them from exported highlight text), turn no-break
-    spaces into ordinary spaces, then collapse whitespace runs and strip.
-    """
-    s = unicodedata.normalize("NFC", s)
-    s = s.replace(_NBSP, " ")
-    s = "".join(ch for ch in s if ch not in _ZERO_WIDTH)
-    return normalize_whitespace(s)
 
 
 def verify_range(book: EpubMap, rng: CfiRange | str, expected_text: str) -> VerificationResult:
