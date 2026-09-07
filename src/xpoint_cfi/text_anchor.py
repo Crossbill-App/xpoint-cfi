@@ -19,7 +19,7 @@ MatchConfidence.HIGHLIGHT_ONLY: ...`` — rather than enumerate the cases.
 
 from __future__ import annotations
 
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from enum import IntEnum
@@ -137,11 +137,22 @@ def find_quote(
 def _normalized_window(
     source: tuple[int, ...], length: int, within: tuple[int, int] | None
 ) -> tuple[int, int]:
-    """Translate a source-coordinate window into normalized-string coordinates."""
+    """Translate a source-coordinate window into normalized-string coordinates.
+
+    ``within``'s end is **exclusive**, so both bounds use a left-bound insertion: the
+    returned end is the first normalized position whose source index has reached the
+    window's end, and every position below it came from inside the window. A right-bound
+    insertion would admit the character sitting exactly at that exclusive end — the
+    parent's tail or the next sibling's text, one character outside the element a CSS
+    selector named.
+
+    The end stays a legal *position* rather than a forbidden one, so a point anchor may
+    still sit exactly on the boundary; it is only characters beyond it that are out.
+    """
     if within is None:
         return (0, length)
     start, end = within
-    return (bisect_left(source, start, hi=length), bisect_right(source, end, hi=length))
+    return (bisect_left(source, start, hi=length), bisect_left(source, end, hi=length))
 
 
 # --------------------------------------------------------------------------------------

@@ -155,3 +155,44 @@ def test_quote_with_a_small_edit_falls_back_to_a_fuzzy_match() -> None:
 def test_quote_that_is_nowhere_near_the_text_is_rejected() -> None:
     with pytest.raises(ResolutionError, match="not found in scope"):
         find_quote(_TEXT, "an entirely unrelated sentence about shipping")
+
+
+# --------------------------------------------------------------------------------------
+# The `within` window
+# --------------------------------------------------------------------------------------
+
+# "alpha" and "gamma" belong to the parent, "beta" to the selected child: the scope's
+# exclusive end (9) is the source offset of a character that is still in the text.
+_NESTED = "alphabetagamma"
+
+
+def test_a_quote_filling_the_window_exactly_still_matches() -> None:
+    match = find_quote(_NESTED, "beta", within=(5, 9))
+    assert (match.start, match.end) == (5, 9)
+    assert match.confidence is MatchConfidence.HIGHLIGHT_ONLY
+
+
+def test_a_quote_reaching_past_the_window_end_does_not_match_exactly() -> None:
+    # "betag" leaves the scope by one character. It must not come back as an exact
+    # match spanning [5, 10); the search stays inside the window.
+    match = find_quote(_NESTED, "betag", within=(5, 9))
+    assert match.end <= 9
+    assert match.confidence is MatchConfidence.FUZZY
+
+
+def test_a_quote_reaching_before_the_window_start_does_not_match_exactly() -> None:
+    match = find_quote(_NESTED, "abeta", within=(5, 9))
+    assert match.start >= 5
+    assert match.confidence is MatchConfidence.FUZZY
+
+
+def test_a_window_covering_the_whole_text_matches_to_the_last_character() -> None:
+    match = find_quote(_NESTED, "gamma", within=(0, len(_NESTED)))
+    assert (match.start, match.end) == (9, 14)
+
+
+def test_a_point_may_anchor_exactly_on_the_window_boundary() -> None:
+    # The boundary itself is a legal caret position even though no character inside the
+    # window sits there.
+    match = find_quote(_NESTED, "", before="alphabeta", within=(5, 9))
+    assert match.start == match.end == 9

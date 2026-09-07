@@ -270,6 +270,39 @@ def test_a_point_locator_round_trips_to_a_zero_length_range(book: EpubMap) -> No
     assert extract_between(book, match.xpoint_range.start, match.xpoint_range.end) == ""
 
 
+def test_selector_scope_is_not_left_by_a_quote_that_overruns_it() -> None:
+    # "beta" belongs to the selected <span>; "gamma" is the parent's tail immediately
+    # after it. A quote reaching into that tail must not resolve as an exact match that
+    # leaves the scope the selector named.
+    scoped = EpubMap.from_bytes(
+        build_epub({"a.xhtml": xhtml_doc("A", '<p>alpha<span id="s">beta</span>gamma</p>')})
+    )
+    locator = Locator(
+        href="OEBPS/a.xhtml",
+        type="application/xhtml+xml",
+        locations=LocatorLocations(css_selector="#s"),
+        text=LocatorText(highlight="betag"),
+    )
+    match = locator_to_xpoint_range(scoped, locator)
+    assert match.confidence is MatchConfidence.FUZZY
+    assert extract_between(scoped, match.xpoint_range.start, match.xpoint_range.end) == "beta"
+
+
+def test_a_quote_filling_the_selected_element_exactly_still_resolves() -> None:
+    scoped = EpubMap.from_bytes(
+        build_epub({"a.xhtml": xhtml_doc("A", '<p>alpha<span id="s">beta</span>gamma</p>')})
+    )
+    locator = Locator(
+        href="OEBPS/a.xhtml",
+        type="application/xhtml+xml",
+        locations=LocatorLocations(css_selector="#s"),
+        text=LocatorText(highlight="beta"),
+    )
+    match = locator_to_xpoint_range(scoped, locator)
+    assert match.confidence is not MatchConfidence.FUZZY
+    assert extract_between(scoped, match.xpoint_range.start, match.xpoint_range.end) == "beta"
+
+
 def test_locator_can_be_given_as_a_plain_mapping(book: EpubMap) -> None:
     payload = xpoint_range_to_locator(book, xp("p[5]/text().4"), xp("p[5]/text().7")).to_dict()
     match = locator_to_xpoint_range(book, payload)
