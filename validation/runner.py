@@ -5,7 +5,9 @@ For each KOReader highlight in a book's sidecar this:
 1. converts the ``pos0``/``pos1`` xpointer range to a range CFI with the library;
 2. self-checks the CFI with :func:`xpoint_cfi.verify_range` (does it re-extract the
    recorded text?);
-3. optionally resolves the same CFI with an independent Node/``epub-cfi-resolver``
+3. builds a Readium locator for the same range and resolves it back, checking that its
+   quote is what KOReader recorded and that the recovered range denotes the same text;
+4. optionally resolves the same CFI with an independent Node/``epub-cfi-resolver``
    reference implementation and compares its extracted text.
 
 Texts are compared only after :func:`normalize_for_comparison` folds away the cosmetic
@@ -27,11 +29,14 @@ from xpoint_cfi import (
     EpubMap,
     XpointCfiError,
     cfi_to_xpoint_range_strings,
+    locator_to_xpoint_range,
     normalize_for_comparison,
     normalize_whitespace,
     verify_range,
     xpoint_range_to_cfi_string,
+    xpoint_range_to_locator,
 )
+from xpoint_cfi.text_range import extract_between
 from xpoint_cfi.xpoint import XPoint, normalize_xpath
 
 from .sidecar import as_dict, as_list, parse_sidecar
@@ -75,6 +80,10 @@ class AnnotationResult:
     roundtrip_detail: str | None = None  # populated on round-trip failure
     self_check_status: str | None = None  # "pass" | "fail" | None (not attempted)
     extracted_text: str | None = None  # populated on self-check failure/error
+    locator_status: str | None = None  # "pass" | "fail" | None (not attempted)
+    locator_detail: str | None = None  # populated on locator failure
+    locator_confidence: str | None = None  # MatchConfidence name of the reverse match
+    locator_exact: bool | None = None  # reverse match landed on the original xpointers
     js_status: str | None = None  # "ok" | "mismatch" | "error" | None (not attempted)
     js_text: str | None = None
     js_error: str | None = None
@@ -87,6 +96,7 @@ class AnnotationResult:
             self.conversion_status != "ok"
             or self.roundtrip_status == "fail"
             or self.self_check_status == "fail"
+            or self.locator_status == "fail"
             or self.js_status in ("mismatch", "error")
         )
 
@@ -131,6 +141,28 @@ class BookReport:
     @property
     def self_check_fail(self) -> int:
         return sum(1 for r in self.results if r.self_check_status == "fail")
+
+    @property
+    def locator_ok(self) -> int:
+        return sum(1 for r in self.results if r.locator_status == "pass")
+
+    @property
+    def locator_fail(self) -> int:
+        return sum(1 for r in self.results if r.locator_status == "fail")
+
+    @property
+    def locator_exact(self) -> int:
+        """How many locator round-trips recovered the original xpointers exactly."""
+        return sum(1 for r in self.results if r.locator_exact)
+
+    @property
+    def locator_confidence_counts(self) -> dict[str, int]:
+        """Tally of the confidence each locator round-trip came back with."""
+        counts: dict[str, int] = {}
+        for result in self.results:
+            if result.locator_confidence is not None:
+                counts[result.locator_confidence] = counts.get(result.locator_confidence, 0) + 1
+        return counts
 
     @property
     def js_ok(self) -> int:
@@ -293,6 +325,8 @@ def validate_book(book: BookUnderTest, build_dir: Path, *, run_js: bool) -> Book
             result.self_check_status = "fail"
             result.extracted_text = f"<{type(exc).__name__}: {exc}>"
 
+        _check_locator(epub_map, ann.pos0, ann.pos1, ann.text, result)
+
         report.results.append(result)
 
     if run_js:
@@ -301,6 +335,47 @@ def validate_book(book: BookUnderTest, build_dir: Path, *, run_js: bool) -> Book
         report.js_skip_reason = "JS step disabled"
 
     return report
+
+
+def _check_locator(
+    epub_map: EpubMap, pos0: str, pos1: str, expected_text: str, result: AnnotationResult
+) -> None:
+    """Run the Readium locator stage for one annotation and record the outcome.
+
+    Two things must hold. The locator's quote has to be the text KOReader recorded —
+    that is what a web reader will search for — and resolving the locator back has to
+    land on a range denoting the same text. Positional identity with the original
+    xpointers is recorded as ``locator_exact`` but is *not* required: a text anchor may
+    legitimately land at the end of one text node where KOReader named the start of the
+    next, which is the same place in the document.
+    """
+    expected = normalize_for_comparison(expected_text)
+    try:
+        locator = xpoint_range_to_locator(epub_map, pos0, pos1)
+        problems: list[str] = []
+        quote = locator.text.highlight or ""
+        if normalize_for_comparison(quote) != expected:
+            problems.append(f"quote differs (got {_truncate(quote)!r})")
+
+        match = locator_to_xpoint_range(epub_map, locator)
+        result.locator_confidence = match.confidence.name
+        recovered = extract_between(epub_map, match.xpoint_range.start, match.xpoint_range.end)
+        if normalize_for_comparison(recovered) != expected:
+            problems.append(f"round-trip text differs (got {_truncate(recovered)!r})")
+
+        rt0 = match.xpoint_range.start.to_string()
+        rt1 = match.xpoint_range.end.to_string()
+        result.locator_exact = (
+            _xpoint_equivalence(pos0, rt0) is None and _xpoint_equivalence(pos1, rt1) is None
+        )
+        if problems:
+            result.locator_status = "fail"
+            result.locator_detail = f"{'; '.join(problems)} (via {rt0!r} -> {rt1!r})"
+        else:
+            result.locator_status = "pass"
+    except XpointCfiError as exc:
+        result.locator_status = "fail"
+        result.locator_detail = f"<{type(exc).__name__}: {exc}>"
 
 
 def _run_js_stage(book: BookUnderTest, report: BookReport, build_dir: Path) -> None:
@@ -409,6 +484,10 @@ def write_report(reports: list[BookReport], path: Path) -> None:
                 "roundtrip_fail": r.roundtrip_fail,
                 "self_check_ok": r.self_check_ok,
                 "self_check_fail": r.self_check_fail,
+                "locator_ok": r.locator_ok,
+                "locator_fail": r.locator_fail,
+                "locator_exact": r.locator_exact,
+                "locator_confidence": r.locator_confidence_counts,
                 "js_ran": r.js_ran,
                 "js_skip_reason": r.js_skip_reason,
                 "pairing_warning": r.pairing_warning,
@@ -430,7 +509,7 @@ def _truncate(text: str, limit: int = 120) -> str:
 
 def print_summary(reports: list[BookReport]) -> None:
     """Print an aligned per-book table plus a detail line for each failure."""
-    headers = ("book", "annots", "conv-ok", "rt-ok", "self-ok", "js-ok", "failures")
+    headers = ("book", "annots", "conv-ok", "rt-ok", "self-ok", "loc-ok", "js-ok", "failures")
     rows: list[tuple[str, ...]] = []
     for r in reports:
         js_cell = str(r.js_ok) if r.js_ran else "skip"
@@ -441,6 +520,7 @@ def print_summary(reports: list[BookReport]) -> None:
                 f"{r.conversion_ok}/{r.total}",
                 f"{r.roundtrip_ok}/{r.conversion_ok}",
                 f"{r.self_check_ok}/{r.conversion_ok}",
+                f"{r.locator_ok}/{r.conversion_ok}",
                 js_cell,
                 str(len(r.failures)),
             )
@@ -458,6 +538,18 @@ def print_summary(reports: list[BookReport]) -> None:
     print("  ".join("-" * w for w in widths))
     for row in rows:
         print(fmt(row))
+
+    totals: dict[str, int] = {}
+    exact = 0
+    for r in reports:
+        exact += r.locator_exact
+        for name, count in r.locator_confidence_counts.items():
+            totals[name] = totals.get(name, 0) + count
+    if totals:
+        breakdown = ", ".join(f"{name.lower()}={count}" for name, count in sorted(totals.items()))
+        resolved = sum(totals.values())
+        print(f"\nlocator match confidence: {breakdown}")
+        print(f"locator round-trips landing on the original xpointers: {exact}/{resolved}")
 
     for r in reports:
         if r.pairing_warning:
@@ -478,6 +570,8 @@ def print_summary(reports: list[BookReport]) -> None:
             if a.self_check_status == "fail":
                 print(f"      self-check expected: {_truncate(a.expected_text)}")
                 print(f"      self-check extracted: {_truncate(a.extracted_text or '')}")
+            if a.locator_status == "fail":
+                print(f"      locator: {a.locator_detail}")
             if a.js_status == "mismatch":
                 print(f"      js expected: {_truncate(a.expected_text)}")
                 print(f"      js extracted: {_truncate(a.js_text or '')}")

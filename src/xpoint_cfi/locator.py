@@ -38,6 +38,11 @@ Deliberate choices this module makes, none of which the Locator model settles:
 * **``position``, ``totalProgression`` and ``title`` are left unset**, since all three
   need publication-wide data (a positions list, a navigation document) that an
   :class:`~xpoint_cfi.epub_map.EpubMap` does not carry.
+
+One thing a text anchor cannot recover: **whitespace at the very edges of a quote**.
+Comparison strips it, so a range whose last character is a space comes back one
+character shorter. The recovered range denotes the same words — which is what the corpus
+validation asserts — but is not byte-identical to the original xpointers.
 """
 
 from __future__ import annotations
