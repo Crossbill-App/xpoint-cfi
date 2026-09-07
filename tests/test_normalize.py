@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from itertools import pairwise
 
 import pytest
@@ -50,6 +51,8 @@ def test_map_example_from_the_docstring() -> None:
         f"soft{_SOFT_HYPHEN}hyphenated word",
         f"emoji {_EMOJI} tail",
         f"no{_NBSP}break{_NBSP}spaces",
+        "décomposed accents: à ê ö",
+        "märchen und hýphens",
         "",
         "   ",
     ],
@@ -96,3 +99,19 @@ def test_whitespace_run_maps_to_its_first_character() -> None:
     normalized, source = normalize_with_map("a \t\n b")
     assert normalized == "a b"
     assert source == (0, 1, 5, 6)
+
+
+def test_decomposed_text_composes_and_stays_mappable() -> None:
+    # A file stored in NFD must still match a quote in NFC, and every output character
+    # must keep a source position: the accent composes onto its base and maps at it.
+    raw = unicodedata.normalize("NFD", "café")
+    assert len(raw) == 5  # c a f e + combining acute
+    normalized, source = normalize_with_map(raw)
+    assert normalized == "café"
+    assert source == (0, 1, 2, 3, 5)
+
+
+def test_composed_and_decomposed_sources_normalize_alike() -> None:
+    composed = normalize_with_map(unicodedata.normalize("NFC", "naïve"))[0]
+    decomposed = normalize_with_map(unicodedata.normalize("NFD", "naïve"))[0]
+    assert composed == decomposed == "naïve"

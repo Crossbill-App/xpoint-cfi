@@ -52,17 +52,16 @@ def normalize_with_map(text: str) -> tuple[str, tuple[int, ...]]:
     normalized offset ``0..len(normalized)`` has a source counterpart.
 
     The folding matches :func:`normalize_for_comparison` with two deliberate
-    differences, both of which keep the map one-to-one with source positions:
+    differences, both of which keep the map usable as a back-map:
 
     * **The ends are not stripped**, since dropping leading whitespace would silently
       shift every offset. Callers compare against a stripped needle, so a leading or
       trailing space in the haystack is harmless.
-    * **NFC is applied per character** rather than over the whole string. A combining
-      sequence that spans several source characters therefore stays decomposed. Real
-      EPUB text and the KOReader highlight text extracted from it come from the same
-      source bytes and share a normalization form, so this only matters for text that
-      arrived from elsewhere already decomposed — such a quote falls through to fuzzy
-      matching instead of matching exactly.
+    * **NFC is applied one combining sequence at a time** rather than over the whole
+      string, so that every output character has a source position to point at. A
+      decomposed ``e`` + combining acute composes to ``é`` mapped at the ``e``; the
+      offset *between* the two source characters is not expressible, which is correct —
+      they are one grapheme, and no range boundary belongs inside it.
 
     Example::
 
@@ -71,19 +70,47 @@ def normalize_with_map(text: str) -> tuple[str, tuple[int, ...]]:
     out: list[str] = []
     source: list[int] = []
     in_run = False
-    for i, raw in enumerate(text):
+    index = 0
+    length = len(text)
+    while index < length:
+        raw = text[index]
         ch = " " if raw == _NBSP else raw
         if ch in _ZERO_WIDTH:
+            index += 1
             continue
         if ch.isspace():
             if not in_run:
                 out.append(" ")
-                source.append(i)
+                source.append(index)
                 in_run = True
+            index += 1
             continue
         in_run = False
-        for composed in unicodedata.normalize("NFC", ch):
+        sequence, next_index = _combining_sequence(text, index, ch)
+        for composed in unicodedata.normalize("NFC", sequence):
             out.append(composed)
-            source.append(i)
-    source.append(len(text))
+            source.append(index)
+        index = next_index
+    source.append(length)
     return "".join(out), tuple(source)
+
+
+def _combining_sequence(text: str, start: int, base: str) -> tuple[str, int]:
+    """Return the combining sequence beginning at ``start`` and the index just past it.
+
+    The sequence is ``base`` plus every following combining mark, with zero-width
+    characters skipped as everywhere else. ``base`` is passed in already folded (a
+    no-break space has become an ordinary space by the time this is called).
+    """
+    parts = [base]
+    index = start + 1
+    while index < len(text):
+        ch = text[index]
+        if ch in _ZERO_WIDTH:
+            index += 1
+            continue
+        if not unicodedata.category(ch).startswith("M"):
+            break
+        parts.append(ch)
+        index += 1
+    return "".join(parts), index

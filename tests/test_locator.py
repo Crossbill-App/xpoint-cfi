@@ -335,6 +335,24 @@ def test_segment_flattening_reproduces_extract_text(book: EpubMap) -> None:
         assert flattened == node.extract_text(None, None)
 
 
+def test_round_trip_in_a_document_stored_as_nfd() -> None:
+    # Some EPUBs ship decomposed text while the quote arrives composed; both sides must
+    # fold to the same thing, and the offsets must stay in source code points.
+    import unicodedata
+
+    body = unicodedata.normalize("NFD", "<p>Le café était très bon aujourd'hui.</p>")
+    nfd_book = EpubMap.from_bytes(build_epub({"a.xhtml": xhtml_doc("A", body)}))
+    locator = Locator(
+        href="OEBPS/a.xhtml",
+        type="application/xhtml+xml",
+        text=LocatorText(before="Le ", highlight="café était", after=" très"),
+    )
+    match = locator_to_xpoint_range(nfd_book, locator)
+    assert match.confidence is MatchConfidence.BOTH_CONTEXTS
+    recovered = extract_between(nfd_book, match.xpoint_range.start, match.xpoint_range.end)
+    assert unicodedata.normalize("NFC", recovered) == "café était"
+
+
 def test_unknown_href_is_rejected(book: EpubMap) -> None:
     locator = Locator(href="nowhere.xhtml", type="application/xhtml+xml")
     with pytest.raises(ResolutionError, match="spine item"):
