@@ -119,14 +119,14 @@ def find_quote(
             enough, or if a point anchor has no context to anchor to.
     """
     haystack, source = normalize_with_map(text)
-    needle = normalize_for_comparison(highlight)
-    lead = normalize_for_comparison(before)
-    trail = normalize_for_comparison(after)
     window = _normalized_window(source, len(haystack), within)
+    needle = normalize_for_comparison(highlight)
 
     if not needle:
-        return _anchor_point(haystack, source, window, lead, trail)
+        return _anchor_point(haystack, source, window, before, after)
 
+    lead = normalize_for_comparison(before)
+    trail = normalize_for_comparison(after)
     occurrences = _occurrences(haystack, needle, window, len(needle))
     if occurrences:
         index, confidence = _best_occurrence(haystack, occurrences, len(needle), lead, trail)
@@ -228,24 +228,24 @@ def _best_occurrence(
 
 
 def _anchor_point(
-    haystack: str, source: tuple[int, ...], window: tuple[int, int], lead: str, trail: str
+    haystack: str, source: tuple[int, ...], window: tuple[int, int], before: str, after: str
 ) -> QuoteMatch:
-    """Anchor a zero-length position at the boundary between ``lead`` and ``trail``.
+    """Anchor a zero-length position at the boundary between ``before`` and ``after``.
 
-    The point is placed where ``lead`` ends (or, with no ``lead``, where ``trail``
-    begins), so whitespace separating the two contexts falls on the ``lead`` side.
+    The point is placed where ``before`` ends, or — with no ``before`` — where ``after``
+    begins. The two contexts partition the resource text at the caret, so the whitespace
+    beside it belongs to whichever of them carries it; see :func:`_point_candidates`.
 
     The context is searched for across the whole text and only the resulting *point* is
     required to fall inside ``window`` — a point's context routinely reaches past the
     element the selector named.
     """
-    whole = (0, len(haystack))
-    if lead:
-        candidates = [index + len(lead) for index in _occurrences(haystack, lead, whole, len(lead))]
-    elif trail:
-        candidates = _occurrences(haystack, trail, whole, len(trail))
-    else:
+    lead = normalize_for_comparison(before)
+    trail = normalize_for_comparison(after)
+    if not lead and not trail:
         raise ResolutionError("<empty quote>", "no highlight and no context to anchor to")
+
+    candidates = _point_candidates(haystack, before, after, lead, trail)
     low, high = window
     candidates = [index for index in candidates if low <= index <= high]
     if not candidates:
@@ -260,6 +260,32 @@ def _anchor_point(
         return QuoteMatch(source[confirmed[0]], source[confirmed[0]], MatchConfidence.BOTH_CONTEXTS)
     confidence = MatchConfidence.ONE_CONTEXT if len(candidates) == 1 else MatchConfidence.AMBIGUOUS
     return QuoteMatch(source[candidates[0]], source[candidates[0]], confidence)
+
+
+def _point_candidates(haystack: str, before: str, after: str, lead: str, trail: str) -> list[int]:
+    """Return every normalized offset a caret could sit at, most faithful first.
+
+    A caret's two contexts are slices of the resource text that meet exactly at it, so
+    ``before``'s trailing whitespace — and ``after``'s leading whitespace — is what says
+    which side of a whitespace run the caret was on. Comparison normally strips that
+    away, which silently drags every caret to the near edge of the run beside it. So the
+    context is first matched **collapsed but unstripped**, which pins the boundary
+    exactly; only if that finds nothing does it fall back to the stripped form, whose
+    boundary lands at the context's last real character.
+
+    Whitespace *runs* still collapse to one character, so a caret parked in the middle
+    of a multi-space run resolves to the run's far edge. Nothing in the normalized text
+    can distinguish those positions, and they render identically.
+    """
+    whole = (0, len(haystack))
+    for text, stripped, at_end in ((before, lead, True), (after, trail, False)):
+        if not stripped:
+            continue
+        for probe in (normalize_with_map(text)[0], stripped):
+            found = _occurrences(haystack, probe, whole, len(probe))
+            if found:
+                return [index + len(probe) for index in found] if at_end else found
+    return []
 
 
 def _fuzzy_match(

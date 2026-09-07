@@ -109,21 +109,32 @@ def test_astral_characters_keep_the_offsets_in_code_points() -> None:
 # --------------------------------------------------------------------------------------
 
 
-def test_empty_highlight_anchors_between_the_contexts() -> None:
-    # The point sits where `before` ends — on the whitespace separating the two
-    # contexts, which belongs to neither of them.
+def test_empty_highlight_anchors_exactly_where_before_ends() -> None:
+    # `before` ends with the space, so the point belongs after it — the two contexts
+    # partition the text and the boundary is where `after` begins.
     match = find_quote(_TEXT, "", before="The cat sat ", after="on the mat")
-    assert match.start == match.end
-    assert _TEXT[: match.start].endswith("The cat sat")
-    assert _TEXT[match.start :].lstrip().startswith("on the mat")
+    assert match.start == match.end == _TEXT.index("on the mat")
     assert match.confidence is MatchConfidence.BOTH_CONTEXTS
+
+
+def test_empty_highlight_anchors_on_the_space_when_before_stops_short_of_it() -> None:
+    # The same text one character earlier: `before` has no trailing space, so the point
+    # is on the space itself. The two cases must not collapse into one.
+    match = find_quote(_TEXT, "", before="The cat sat", after=" on the mat")
+    assert match.start == match.end == _TEXT.index(" on the mat")
 
 
 def test_empty_highlight_with_only_a_leading_context() -> None:
     match = find_quote(_TEXT, "", before="on the hat. ")
-    assert match.start == match.end
-    assert _TEXT[match.start :].lstrip().startswith("The end")
+    assert match.start == match.end == _TEXT.index("The end")
     assert match.confidence is MatchConfidence.ONE_CONTEXT
+
+
+def test_point_anchor_survives_a_context_whose_whitespace_differs() -> None:
+    # A reader's `before` may not reproduce the document's whitespace exactly; the
+    # stripped form still anchors, landing at the end of its last real character.
+    match = find_quote("Hello   brave world", "", before="Hello")
+    assert match.start == match.end == 5
 
 
 def test_empty_highlight_with_only_a_following_context() -> None:

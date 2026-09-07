@@ -270,6 +270,16 @@ def test_a_point_locator_round_trips_to_a_zero_length_range(book: EpubMap) -> No
     assert extract_between(book, match.xpoint_range.start, match.xpoint_range.end) == ""
 
 
+@pytest.mark.parametrize("offset", [0, 3, 4, 7, 8, 11, 12, 22])
+def test_a_point_locator_round_trips_to_the_same_offset(book: EpubMap, offset: int) -> None:
+    # p[5] reads "The cat sat on the mat.": offsets 3, 7 and 11 sit on a space and 4, 8
+    # and 12 immediately after one. A caret must come back exactly where it went in, or
+    # every stored reading position drifts by the width of the whitespace beside it.
+    match = locator_to_xpoint_range(book, xpoint_to_locator(book, xp(f"p[5]/text().{offset}")))
+    assert match.xpoint_range.start == match.xpoint_range.end
+    assert match.xpoint_range.start.char_offset == offset
+
+
 def test_selector_scope_is_not_left_by_a_quote_that_overruns_it() -> None:
     # "beta" belongs to the selected <span>; "gamma" is the parent's tail immediately
     # after it. A quote reaching into that tail must not resolve as an exact match that
