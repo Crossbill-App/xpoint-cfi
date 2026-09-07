@@ -74,6 +74,59 @@ if not result.ok:
     print("conversion drifted; extracted:", result.extracted_text)
 ```
 
+## Readium locators
+
+A web reader built on [`@readium/navigator`](https://github.com/readium/ts-toolkit)
+addresses positions with a [Readium
+Locator](https://readium.org/architecture/models/locators/) — a resource `href`, a CSS
+selector, and a text quote with its surrounding context — rather than with an xpointer or
+a CFI. Converting both ways lets the same highlight be made on a KOReader device and
+shown in a browser:
+
+```python
+from xpoint_cfi import (
+    EpubMap, MatchConfidence,
+    xpoint_to_locator, xpoint_range_to_locator, locator_to_xpoint_range,
+)
+
+locator = xpoint_range_to_locator(
+    book,
+    "/body/DocFragment[1]/body/div/p[3]/text().0",
+    "/body/DocFragment[1]/body/div/p[3]/text().23",
+)
+locator.to_dict()
+# {'href': 'OEBPS/chap1.xhtml',
+#  'type': 'application/xhtml+xml',
+#  'locations': {'progression': 0.5392156862745098,
+#                'cssSelector': '#intro > p:nth-child(3)'},
+#  'text': {'before': ' world.\nA hyphenated word appears here.\n',
+#           'highlight': 'The cat sat on the mat.',
+#           'after': '\nThe cat sat on the hat.'}}
+
+# ...and back. The reverse is a *search*, so it grades how sure it is.
+match = locator_to_xpoint_range(book, locator)          # accepts the dict too
+if match.confidence >= MatchConfidence.ONE_CONTEXT:
+    start, end = match.xpoint_range.start, match.xpoint_range.end
+```
+
+The two directions are deliberately asymmetric. Producing a locator is exact: the quote
+is read out of the document through the same extraction `verify_range` uses, so a
+locator and a verified CFI can never disagree about what a range says. Resolving one is a
+search — the `cssSelector` only narrows *where* the match may land, and the quote is then
+found by text so that a locator still resolves against a DOM a reader processed
+differently. `MatchConfidence` is an ordered enum (`FUZZY` < `AMBIGUOUS` <
+`HIGHLIGHT_ONLY` < `ONE_CONTEXT` < `BOTH_CONTEXTS`) so callers can set a floor and reject
+weak matches instead of storing a bad position.
+
+`xpoint_to_locator` handles a single position: `text.highlight` is `""` and the two
+contexts meet at the point.
+
+`href` is the spine item's container path **percent-encoded as a URI reference** — that
+is what the Locator model requires and what a navigator resolves against the publication
+base, so a file named `ch 1.xhtml` becomes `OEBPS/ch%201.xhtml`. `EpubMap.spine_href()`
+reports the same path decoded, for reading the archive. Resolving a locator accepts
+either form.
+
 ## API overview
 
 Everything is exported from the top-level `xpoint_cfi` package.
@@ -91,6 +144,15 @@ Everything is exported from the top-level `xpoint_cfi` package.
 - `xpoint_range_to_cfi(book, XPointRange) -> CfiRange` /
   `cfi_range_to_xpoint_range(book, CfiRange) -> XPointRange`
 
+**Readium locators:**
+
+- `xpoint_to_locator(book, XPoint | str) -> Locator`
+- `xpoint_range_to_locator(book, start, end) -> Locator` (each end an `XPoint` or string)
+- `locator_to_xpoint_range(book, Locator | dict) -> LocatorMatch`
+- `Locator`, `LocatorLocations`, `LocatorText` — frozen dataclasses with
+  `to_dict()` / `from_dict()` for the Readium JSON shape.
+- `LocatorMatch` (fields `xpoint_range`, `confidence`) and the `MatchConfidence` enum.
+
 **Layers you can use standalone:**
 
 - `EpubMap` / `NodeMap` — the parsed document and its coordinate systems.
@@ -98,6 +160,10 @@ Everything is exported from the top-level `xpoint_cfi` package.
   (`.parse()` / `.to_string()`), no EPUB needed.
 - `Cfi`, `CfiRange`, `Step`, `LocalPath`, `CharOffset`, `TextAssertion`, `parse_cfi` —
   the CFI string layer (parse / `to_string()` / `Cfi.sort_key()`), no EPUB needed.
+- `xpoint_cfi.css_selector` — `selector_for_element` / `resolve_selector` /
+  `escape_css_identifier`, the `querySelector` subset Readium's generators emit.
+- `xpoint_cfi.text_anchor` — `find_quote`, Hypothesis-style quote anchoring over plain
+  strings, no EPUB needed.
 
 **Verification:** `verify_range(book, CfiRange | str, expected_text) -> VerificationResult`
 with fields `ok: bool` and `extracted_text: str`. Texts are compared via
@@ -121,13 +187,22 @@ also exported.
 - **Offset-on-element CFIs are unsupported.** A character offset must sit on an odd
   (text) step; an offset attached to an element step raises `ResolutionError`.
 - Round-trips are identity **modulo `[1]` normalization** of the xpath (`p` ↔ `p[1]`).
+- **Locators lose edge whitespace.** A quote is compared with whitespace stripped, so a
+  range ending on a space comes back one character shorter. It denotes the same words,
+  not the same byte span.
+- **Locators are per-resource.** A range crossing spine items produces a locator that
+  cannot be resolved back — no single resource contains the whole quote. KOReader does
+  not produce such highlights in practice.
+- **`locations` carries only `progression` and `cssSelector`.** `position`,
+  `totalProgression` and `title` need publication-wide data an `EpubMap` does not have;
+  `partialCfi` and `domRange` are not emitted (the CFI converters cover the former).
 
 ## Testing conversions against real books
 
 The repo ships a validation pipeline that checks conversions against **real KOReader
 annotations**: it reads highlights from KOReader's sidecar files, converts every
-xpointer range to a CFI, and verifies the results four ways. Design details live in
-[VALIDATION.md](VALIDATION.md).
+xpointer range to a CFI and to a Readium locator, and verifies the results five ways.
+Design details live in [VALIDATION.md](VALIDATION.md).
 
 ### 1. Add books to `test-books/`
 
@@ -169,19 +244,21 @@ uv run python -m validation.run path/to/corpus     # a different corpus director
 uv run pytest -m corpus                            # same thing as a pytest suite
 ```
 
-Every highlight goes through four stages:
+Every highlight goes through five stages:
 
 1. **convert** — `pos0`/`pos1` xpointers → range CFI;
 2. **round-trip** — CFI → xpointers again, compared positionally against the originals;
 3. **self-check** — `verify_range` re-extracts the CFI's text and compares it with the
    highlight text KOReader stored;
-4. **js** — the independent JS resolver extracts the same range (when installed).
+4. **locator** — the same range → a Readium locator, whose quote must be the text
+   KOReader stored, and back again, landing on a range denoting that same text;
+5. **js** — the independent JS resolver extracts the same range (when installed).
 
-The run prints a per-book table (`conv-ok` / `rt-ok` / `self-ok` / `js-ok`) with a
-detail line for every failure (xpointers, CFI, expected vs. extracted text), writes the
-full report to `validation/build/report.json`, and exits non-zero if anything failed —
-so a problem book is caught just by dropping its `.sdr` into `test-books/` and running
-the pipeline.
+The run prints a per-book table (`conv-ok` / `rt-ok` / `self-ok` / `loc-ok` / `js-ok`)
+with a detail line for every failure (xpointers, CFI, expected vs. extracted text), a
+run-wide breakdown of the confidence the locator matches came back with, the full report
+to `validation/build/report.json`, and exits non-zero if anything failed — so a problem
+book is caught just by dropping its `.sdr` into `test-books/` and running the pipeline.
 
 ## Development
 

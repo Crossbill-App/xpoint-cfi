@@ -2,8 +2,9 @@
 
 Books are discovered at collection time; the module is skipped when the corpus is absent
 so CI stays fast. The Node cross-check runs only when node, ``resolve.mjs`` and its
-``node_modules`` are all present, otherwise each test only checks conversion + self-check
-and warns that the JS step was skipped.
+``node_modules`` are all present, otherwise each test only checks conversion,
+round-trip, self-check and the Readium locator stage, and warns that the JS step was
+skipped.
 """
 
 from __future__ import annotations
@@ -56,6 +57,10 @@ def test_corpus_book(book: BookUnderTest, corpus_build_dir: Path) -> None:
             for f in report.failures
             if f.self_check_status == "fail"
         )
+    )
+
+    assert report.locator_fail == 0, f"{report.locator_fail} locator failure(s): " + "; ".join(
+        f"#{f.index} {f.locator_detail}" for f in report.failures if f.locator_status == "fail"
     )
 
     if report.js_ran:

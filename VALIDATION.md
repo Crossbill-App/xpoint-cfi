@@ -16,14 +16,38 @@ annotations (pos0, pos1, text, chapter, pageno)
   ▼
 range CFI per annotation
   │ 3a. library self-check: verify_range(book, cfi, text)   [this library]
-  │ 3b. independent check: node + epub-cfi-resolver + jsdom [JS reference impl]
+  │ 3b. locator round-trip: xpoint -> locator -> xpoint     [this library]
+  │ 3c. independent check: node + epub-cfi-resolver + jsdom [JS reference impl]
   ▼
 validation/build/report.json + console summary; pytest wrapper per book
 ```
 
-Step 3b is the point of the exercise: an independent JS implementation resolves our
+Step 3c is the point of the exercise: an independent JS implementation resolves our
 CFIs against the same EPUB. If it extracts the same text KOReader recorded, the CFI
 is interoperable, not just self-consistent.
+
+## Locator round-trip (step 3b)
+
+`_check_locator` in `runner.py` builds a Readium locator for the annotation's range and
+resolves it back, asserting two things:
+
+- the locator's `text.highlight` is the text KOReader recorded (that is what a web
+  reader searches for), and
+- the recovered `XPointRange` denotes that same text.
+
+Equivalence is **by text, not by identical xpointers**. A text anchor may land at the end
+of one text node where KOReader named the start of the next — the same place in the
+document — and a quote ending in whitespace comes back a character shorter because
+comparison strips it. Positional identity is still reported: per annotation as
+`locator_exact`, and run-wide as a count alongside the `MatchConfidence` breakdown, so a
+regression in it is visible without failing the run.
+
+A locator produced from the same document should come back as `BOTH_CONTEXTS`; anything
+weaker on a corpus book is worth looking at even when the text matched.
+
+A range whose ends sit in different spine items is **skipped**, not failed: a Readium
+locator addresses one resource, so no single quote can carry such a range. The skip count
+is printed and the `loc-ok` column counts only attempted annotations.
 
 ## Layout
 
@@ -90,17 +114,19 @@ collapses whitespace when storing highlight text, and crengine may hyphenate.
 ## Report
 
 `runner.py` produces per book: total annotations, converted OK / conversion errors,
-self-check pass/fail, JS pass/fail/skipped, with per-failure detail (xpointers, CFI,
-expected vs extracted text, error). JSON report to `validation/build/report.json` +
-aligned console table. Exit non-zero when any annotation fails.
+self-check pass/fail, locator pass/fail plus the exact-position count and confidence
+tally, JS pass/fail/skipped, with per-failure detail (xpointers, CFI, expected vs
+extracted text, error). JSON report to `validation/build/report.json` + aligned console
+table. Exit non-zero when any annotation fails.
 
 ## Pytest integration
 
 `test_validation_corpus.py` discovers `test-books/*.sdr` at collection time and
 parametrizes one test per book (`pytest.skip` when the directory is missing/empty).
 Each test runs the pipeline for that book; JS step is included when `node` and
-`validation/js/node_modules` are present, otherwise the test only asserts conversion
-+ self-check and records the JS step as skipped. Corpus tests are marked
+`validation/js/node_modules` are present, otherwise the test only asserts conversion,
+round-trip, self-check and the locator round-trip, and records the JS step as skipped.
+Corpus tests are marked
 `@pytest.mark.corpus`; the default unit suite stays fast and CI-safe.
 
 ## Notes
