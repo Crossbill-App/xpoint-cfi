@@ -13,19 +13,13 @@ import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from lxml import etree
-
 from .cfi import CfiRange, parse_cfi
 from .convert import cfi_range_to_xpoint_range
-from .epub_map import cp_to_utf16
 from .exceptions import ResolutionError
-from .xpoint import normalize_xpath
+from .text_range import extract_between
 
 if TYPE_CHECKING:
-    from .epub_map import EpubMap, NodeMap
-    from .xpoint import XPoint
-
-_Element = etree._Element  # pyright: ignore[reportPrivateUsage]
+    from .epub_map import EpubMap
 
 __all__ = [
     "VerificationResult",
@@ -75,9 +69,9 @@ def normalize_for_comparison(s: str) -> str:
 def verify_range(book: EpubMap, rng: CfiRange | str, expected_text: str) -> VerificationResult:
     """Extract the text a CFI range denotes and compare it to ``expected_text``.
 
-    ``rng`` may be a :class:`CfiRange` or a range-CFI string. Extraction spans spine
-    items when the range crosses them: the tail of the start document, the full text of
-    any intermediate documents, and the head of the end document.
+    ``rng`` may be a :class:`CfiRange` or a range-CFI string. Extraction goes through
+    :func:`~xpoint_cfi.text_range.extract_between`, so it spans spine items when the
+    range crosses them.
 
     Raises:
         ResolutionError: if a range-CFI string parses to a non-range CFI, or if either
@@ -91,44 +85,6 @@ def verify_range(book: EpubMap, rng: CfiRange | str, expected_text: str) -> Veri
 
     xpoint_range = cfi_range_to_xpoint_range(book, rng)
 
-    extracted = _extract_between(book, xpoint_range.start, xpoint_range.end)
+    extracted = extract_between(book, xpoint_range.start, xpoint_range.end)
     ok = normalize_for_comparison(extracted) == normalize_for_comparison(expected_text)
     return VerificationResult(ok=ok, extracted_text=extracted)
-
-
-def _extract_between(book: EpubMap, start_xp: XPoint, end_xp: XPoint) -> str:
-    start_index = start_xp.doc_fragment_index
-    end_index = end_xp.doc_fragment_index
-    start_node = book.doc(start_index)
-    end_node = book.doc(end_index)
-    start_bound = _bound(start_node, start_xp, is_end=False)
-    end_bound = _bound(end_node, end_xp, is_end=True)
-
-    if start_index == end_index:
-        return start_node.extract_text(start_bound, end_bound)
-
-    parts = [start_node.extract_text(start_bound, None)]
-    for index in range(start_index + 1, end_index):
-        parts.append(book.doc(index).extract_text(None, None))
-    parts.append(end_node.extract_text(None, end_bound))
-    return "".join(parts)
-
-
-def _bound(node: NodeMap, xpoint: XPoint, *, is_end: bool) -> tuple[_Element, int, int]:
-    """Resolve an :class:`XPoint` to an ``(element, odd_index, utf16_offset)`` bound.
-
-    A text-position xpoint resolves directly. An element-boundary xpoint resolves to the
-    element's first gap (offset 0) as a start bound, or the end of its last gap as an end
-    bound, so that an element boundary encloses the element's whole text.
-    """
-    elem = node.element_by_xpath(normalize_xpath(xpoint.xpath))
-    if xpoint.has_text_position:
-        location = node.text_position_to_cfi(elem, xpoint.text_node_index, xpoint.char_offset)
-        if location is not None:
-            odd_index, utf16_offset = location
-            return (elem, odd_index, utf16_offset)
-    chunks = node.chunks(elem)
-    if is_end:
-        last = chunks[-1]
-        return (elem, last.odd_index, cp_to_utf16(last.text, len(last.text)))
-    return (elem, chunks[0].odd_index, 0)
