@@ -80,7 +80,7 @@ class AnnotationResult:
     roundtrip_detail: str | None = None  # populated on round-trip failure
     self_check_status: str | None = None  # "pass" | "fail" | None (not attempted)
     extracted_text: str | None = None  # populated on self-check failure/error
-    locator_status: str | None = None  # "pass" | "fail" | None (not attempted)
+    locator_status: str | None = None  # "pass" | "fail" | "skip" | None (not attempted)
     locator_detail: str | None = None  # populated on locator failure
     locator_confidence: str | None = None  # MatchConfidence name of the reverse match
     locator_exact: bool | None = None  # reverse match landed on the original xpointers
@@ -149,6 +149,15 @@ class BookReport:
     @property
     def locator_fail(self) -> int:
         return sum(1 for r in self.results if r.locator_status == "fail")
+
+    @property
+    def locator_attempted(self) -> int:
+        return sum(1 for r in self.results if r.locator_status in ("pass", "fail"))
+
+    @property
+    def locator_skipped(self) -> int:
+        """Cross-resource ranges, which a per-resource Readium locator cannot express."""
+        return sum(1 for r in self.results if r.locator_status == "skip")
 
     @property
     def locator_exact(self) -> int:
@@ -348,9 +357,18 @@ def _check_locator(
     xpointers is recorded as ``locator_exact`` but is *not* required: a text anchor may
     legitimately land at the end of one text node where KOReader named the start of the
     next, which is the same place in the document.
+
+    A range whose ends sit in different spine items is skipped rather than failed: a
+    Readium locator addresses one resource, so no single quote can carry such a range —
+    a documented limitation, not a regression.
     """
     expected = normalize_for_comparison(expected_text)
     try:
+        if XPoint.parse(pos0).doc_fragment_index != XPoint.parse(pos1).doc_fragment_index:
+            result.locator_status = "skip"
+            result.locator_detail = "cross-resource range: a locator addresses one resource"
+            return
+
         locator = xpoint_range_to_locator(epub_map, pos0, pos1)
         problems: list[str] = []
         quote = locator.text.highlight or ""
@@ -486,6 +504,7 @@ def write_report(reports: list[BookReport], path: Path) -> None:
                 "self_check_fail": r.self_check_fail,
                 "locator_ok": r.locator_ok,
                 "locator_fail": r.locator_fail,
+                "locator_skipped": r.locator_skipped,
                 "locator_exact": r.locator_exact,
                 "locator_confidence": r.locator_confidence_counts,
                 "js_ran": r.js_ran,
@@ -520,7 +539,7 @@ def print_summary(reports: list[BookReport]) -> None:
                 f"{r.conversion_ok}/{r.total}",
                 f"{r.roundtrip_ok}/{r.conversion_ok}",
                 f"{r.self_check_ok}/{r.conversion_ok}",
-                f"{r.locator_ok}/{r.conversion_ok}",
+                f"{r.locator_ok}/{r.locator_attempted}",
                 js_cell,
                 str(len(r.failures)),
             )
@@ -541,8 +560,10 @@ def print_summary(reports: list[BookReport]) -> None:
 
     totals: dict[str, int] = {}
     exact = 0
+    skipped = 0
     for r in reports:
         exact += r.locator_exact
+        skipped += r.locator_skipped
         for name, count in r.locator_confidence_counts.items():
             totals[name] = totals.get(name, 0) + count
     if totals:
@@ -550,6 +571,8 @@ def print_summary(reports: list[BookReport]) -> None:
         resolved = sum(totals.values())
         print(f"\nlocator match confidence: {breakdown}")
         print(f"locator round-trips landing on the original xpointers: {exact}/{resolved}")
+    if skipped:
+        print(f"locator stage skipped for {skipped} cross-resource range(s)")
 
     for r in reports:
         if r.pairing_warning:

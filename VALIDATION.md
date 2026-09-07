@@ -45,6 +45,10 @@ regression in it is visible without failing the run.
 A locator produced from the same document should come back as `BOTH_CONTEXTS`; anything
 weaker on a corpus book is worth looking at even when the text matched.
 
+A range whose ends sit in different spine items is **skipped**, not failed: a Readium
+locator addresses one resource, so no single quote can carry such a range. The skip count
+is printed and the `loc-ok` column counts only attempted annotations.
+
 ## Layout
 
 ```

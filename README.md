@@ -91,14 +91,15 @@ from xpoint_cfi import (
 
 locator = xpoint_range_to_locator(
     book,
-    "/body/DocFragment[1]/body/div/p[5]/text().0",
-    "/body/DocFragment[1]/body/div/p[5]/text().23",
+    "/body/DocFragment[1]/body/div/p[3]/text().0",
+    "/body/DocFragment[1]/body/div/p[3]/text().23",
 )
 locator.to_dict()
 # {'href': 'OEBPS/chap1.xhtml',
 #  'type': 'application/xhtml+xml',
-#  'locations': {'progression': 0.61, 'cssSelector': '#intro > p:nth-child(5)'},
-#  'text': {'before': '…word appears here.\n',
+#  'locations': {'progression': 0.5392156862745098,
+#                'cssSelector': '#intro > p:nth-child(3)'},
+#  'text': {'before': ' world.\nA hyphenated word appears here.\n',
 #           'highlight': 'The cat sat on the mat.',
 #           'after': '\nThe cat sat on the hat.'}}
 
