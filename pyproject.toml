@@ -1,6 +1,6 @@
 [project]
 name = "xpoint-cfi"
-version = "0.1.0"
+version = "0.1.1"
 description = "Convert KOReader (crengine) xpointers to EPUB CFI and back"
 readme = "README.md"
 authors = [
