@@ -18,6 +18,8 @@ from xpoint_cfi.epub_map import (
     utf16_to_cp,
 )
 from xpoint_cfi.exceptions import EpubStructureError, ResolutionError
+from xpoint_cfi.locator import locator_to_xpoint_range, xpoint_to_locator
+from xpoint_cfi.text_anchor import MatchConfidence
 from xpoint_cfi.xpoint import normalize_xpath
 
 EMOJI = "\U0001f600"  # U+1F600, one code point / two UTF-16 units
@@ -657,3 +659,25 @@ def test_textless_element_nondefault_position_raises() -> None:
         nm.text_position_to_cfi(p, 1, 5)
     with pytest.raises(ResolutionError, match="countable"):
         nm.text_position_to_cfi(p, 2, 0)
+
+
+# --------------------------------------------------------------------------------------
+# Element identity
+# --------------------------------------------------------------------------------------
+
+
+def test_one_parse_converts_many_positions_as_a_fresh_parse_does() -> None:
+    # lxml frees the proxy of an element nothing references and may give its id to the
+    # next proxy it makes; wrappers, <img> and empty anchors are the elements that happens to.
+    body = "".join(
+        f'<div><div><a id="n{i}"/><p><img src="x.png"/><span><b>Head {i}.</b></span>'
+        f" Paragraph {i} has <i>some</i> text.</p></div></div>"
+        for i in range(1, 201)
+    )
+    book = EpubMap.from_bytes(build_epub({"a.xhtml": xhtml_doc("A", body)}))
+
+    for i in range(1, 201, 3):
+        xpoint = f"/body/DocFragment[1]/body/div[{i}]/div[1]/p[1]/text().{i % 5}"
+        match = locator_to_xpoint_range(book, xpoint_to_locator(book, xpoint))
+        assert match.confidence is MatchConfidence.BOTH_CONTEXTS, xpoint
+        assert match.xpoint_range.start.to_string() == xpoint
