@@ -17,6 +17,7 @@ from xpoint_cfi import (
     EpubMap,
     Locator,
     LocatorLocations,
+    LocatorMatch,
     LocatorText,
     MatchConfidence,
     ResolutionError,
@@ -313,6 +314,67 @@ def test_a_quote_filling_the_selected_element_exactly_still_resolves() -> None:
     match = locator_to_xpoint_range(scoped, locator)
     assert match.confidence is not MatchConfidence.FUZZY
     assert extract_between(scoped, match.xpoint_range.start, match.xpoint_range.end) == "beta"
+
+
+_UNINDENTED = "<h1>Chapter One</h1><p>First paragraph ends here.</p><p>Second paragraph starts.</p>"
+
+
+@pytest.fixture
+def unindented_book() -> EpubMap:
+    return EpubMap.from_bytes(build_epub({"a.xhtml": xhtml_doc("A", _UNINDENTED)}))
+
+
+def browser_locator(before: str, highlight: str, after: str) -> Locator:
+    """A locator read from a DOM, which has no text between blocks the markup runs together."""
+    return Locator(
+        href="OEBPS/a.xhtml",
+        type="application/xhtml+xml",
+        text=LocatorText(before=before, highlight=highlight, after=after),
+    )
+
+
+def landed_on(book: EpubMap, match: LocatorMatch) -> str:
+    start, end = match.xpoint_range.start, match.xpoint_range.end
+    return normalize_for_comparison(extract_between(book, start, end))
+
+
+def test_a_browser_quote_across_a_block_break_resolves_exactly(unindented_book: EpubMap) -> None:
+    locator = browser_locator("First paragraph ", "ends here.Second", " paragraph starts.")
+
+    match = locator_to_xpoint_range(unindented_book, locator)
+
+    assert match.confidence is MatchConfidence.BOTH_CONTEXTS
+    assert landed_on(unindented_book, match) == "ends here. Second"
+
+
+def test_a_browser_context_across_a_block_break_still_confirms_the_quote(
+    unindented_book: EpubMap,
+) -> None:
+    locator = browser_locator(
+        "Chapter OneFirst paragraph ends here.", "Second paragraph", " starts."
+    )
+
+    match = locator_to_xpoint_range(unindented_book, locator)
+
+    assert match.confidence is MatchConfidence.BOTH_CONTEXTS
+    assert landed_on(unindented_book, match) == "Second paragraph"
+
+
+def test_a_short_browser_quote_across_a_block_break_is_found_rather_than_rejected() -> None:
+    # With the separator in the text, "bc" is not even approximately there.
+    book = EpubMap.from_bytes(build_epub({"a.xhtml": xhtml_doc("A", "<p>ab</p><p>cd</p>")}))
+
+    match = locator_to_xpoint_range(book, browser_locator("a", "bc", "d"))
+
+    assert match.confidence is MatchConfidence.BOTH_CONTEXTS
+    assert landed_on(book, match) == "b c"
+
+
+def test_a_quote_absent_either_way_is_rejected_with_the_separated_texts_error(
+    unindented_book: EpubMap,
+) -> None:
+    with pytest.raises(ResolutionError, match="quote not found"):
+        locator_to_xpoint_range(unindented_book, browser_locator("", "nowhere in the book", ""))
 
 
 def test_locator_can_be_given_as_a_plain_mapping(book: EpubMap) -> None:

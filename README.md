@@ -114,7 +114,9 @@ is read out of the document through the same extraction `verify_range` uses, so 
 locator and a verified CFI can never disagree about what a range says. Resolving one is a
 search — the `cssSelector` only narrows *where* the match may land, and the quote is then
 found by text so that a locator still resolves against a DOM a reader processed
-differently. `MatchConfidence` is an ordered enum (`FUZZY` < `AMBIGUOUS` <
+differently. Extraction puts a newline between block elements, as KOReader's export does,
+while a browser's DOM has no text between `</p><p>`; a match weaker than `BOTH_CONTEXTS`
+is therefore retried over the text without those separators. `MatchConfidence` is an ordered enum (`FUZZY` < `AMBIGUOUS` <
 `HIGHLIGHT_ONLY` < `ONE_CONTEXT` < `BOTH_CONTEXTS`) so callers can set a floor and reject
 weak matches instead of storing a bad position.
 
