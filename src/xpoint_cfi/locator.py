@@ -35,6 +35,12 @@ Deliberate choices this module makes, none of which the Locator model settles:
   full cross-resource text, and takes ``text.after`` from the end resource. Such a
   locator cannot be resolved back (no single resource contains the quote) — KOReader
   does not produce cross-fragment highlights in practice.
+* **A block separator is optional when resolving.** Extraction puts a ``"\\n"`` between
+  consecutive block elements, as KOReader's highlight export does, whether or not the
+  markup has whitespace there. A DOM has no text between ``</p><p>``, so a browser's
+  ``Range.toString()`` reads ``here.Second`` where extraction reads ``here.\\nSecond``. A
+  match weaker than :attr:`~xpoint_cfi.text_anchor.MatchConfidence.BOTH_CONTEXTS` is
+  therefore tried again over the text without those separators, and the stronger kept.
 * **``position``, ``totalProgression`` and ``title`` are left unset**, since all three
   need publication-wide data (a positions list, a navigation document) that an
   :class:`~xpoint_cfi.epub_map.EpubMap` does not carry.
@@ -57,7 +63,7 @@ from lxml import etree
 from .css_selector import resolve_selector, selector_for_element
 from .epub_map import cp_to_utf16, element_children
 from .exceptions import ResolutionError
-from .text_anchor import MatchConfidence, find_quote
+from .text_anchor import MatchConfidence, QuoteMatch, find_quote
 from .text_range import extract_between, resolve_bound
 from .xpoint import XPoint, XPointRange
 
@@ -365,6 +371,10 @@ def locator_to_xpoint_range(book: EpubMap, locator: Locator | Mapping[str, objec
     exactly on the quote's own paragraph would otherwise leave the contexts with nothing
     to confirm against.
 
+    A match weaker than :attr:`~xpoint_cfi.text_anchor.MatchConfidence.BOTH_CONTEXTS` is
+    searched for again over the resource text without its block separators, which is the
+    text a browser's DOM holds, and the stronger of the two is kept.
+
     Returns:
         A :class:`LocatorMatch` holding the range and the confidence it was found with.
 
@@ -377,15 +387,7 @@ def locator_to_xpoint_range(book: EpubMap, locator: Locator | Mapping[str, objec
     node = book.doc(spine_index)
     scope = _scope_element(node, parsed.locations.css_selector)
 
-    segments = _segments(node, node.body)
-    resource_text = "".join(segment.text for segment in segments)
-    match = find_quote(
-        resource_text,
-        parsed.text.highlight or "",
-        parsed.text.before or "",
-        parsed.text.after or "",
-        within=_scope_window(segments, scope),
-    )
+    segments, match = _best_match(_segments(node, node.body), scope, parsed.text)
 
     start = _xpoint_at(node, spine_index, segments, match.start, is_end=False)
     end = (
@@ -394,6 +396,45 @@ def locator_to_xpoint_range(book: EpubMap, locator: Locator | Mapping[str, objec
         else _xpoint_at(node, spine_index, segments, match.end, is_end=True)
     )
     return LocatorMatch(xpoint_range=XPointRange(start=start, end=end), confidence=match.confidence)
+
+
+def _best_match(
+    segments: tuple[_Segment, ...], scope: _Element, text: LocatorText
+) -> tuple[tuple[_Segment, ...], QuoteMatch]:
+    """Search with the block separators, then without them unless that already settled it.
+
+    Returns the segments the kept match's offsets index into. When neither search finds
+    the quote, the error from the first — the text the library itself extracts — is raised.
+    """
+    unseparated = tuple(segment for segment in segments if segment.elem is not None)
+    attempts = (segments,) if len(unseparated) == len(segments) else (segments, unseparated)
+    best: tuple[tuple[_Segment, ...], QuoteMatch] | None = None
+    failure: ResolutionError | None = None
+    for attempt in attempts:
+        try:
+            match = _search(attempt, scope, text)
+        except ResolutionError as exc:
+            failure = failure or exc
+            continue
+        if best is None or match.confidence > best[1].confidence:
+            best = (attempt, match)
+        if match.confidence is MatchConfidence.BOTH_CONTEXTS:
+            break
+    if best is None:
+        assert failure is not None
+        raise failure
+    return best
+
+
+def _search(segments: tuple[_Segment, ...], scope: _Element, text: LocatorText) -> QuoteMatch:
+    """Find a locator's quote in the text ``segments`` flatten to, within ``scope``."""
+    return find_quote(
+        "".join(segment.text for segment in segments),
+        text.highlight or "",
+        text.before or "",
+        text.after or "",
+        within=_scope_window(segments, scope),
+    )
 
 
 def _spine_index_for_href(book: EpubMap, href: str) -> int:
