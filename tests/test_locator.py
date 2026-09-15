@@ -390,7 +390,7 @@ def test_a_browser_point_whose_before_crosses_a_block_break_lands_after_it() -> 
     assert match.xpoint_range.start.to_string() == "/body/DocFragment[1]/body/p[5]/text().0"
 
 
-def test_a_quote_absent_either_way_is_rejected_with_the_separated_texts_error(
+def test_a_quote_absent_either_way_is_rejected(
     unindented_book: EpubMap,
 ) -> None:
     with pytest.raises(ResolutionError, match="quote not found"):
