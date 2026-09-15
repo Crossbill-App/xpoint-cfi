@@ -142,6 +142,15 @@ def test_empty_highlight_with_only_a_following_context() -> None:
     assert match.start == match.end == _TEXT.index("The end")
 
 
+def test_a_point_placed_by_its_following_context_is_not_confirmed_by_it() -> None:
+    # `before` is nowhere, so the point falls back to where `after` occurs; `after` abuts
+    # each of those by construction and says nothing about which one is meant.
+    text = "Intro. Beta starts. Gamma. Beta starts."
+    match = find_quote(text, "", before="nothing like it", after="Beta starts.")
+    assert match.start == match.end == text.index("Beta")
+    assert match.confidence is MatchConfidence.AMBIGUOUS
+
+
 def test_empty_highlight_and_no_context_is_an_error() -> None:
     with pytest.raises(ResolutionError, match="no highlight and no context"):
         find_quote(_TEXT, "")

@@ -370,6 +370,26 @@ def test_a_short_browser_quote_across_a_block_break_is_found_rather_than_rejecte
     assert landed_on(book, match) == "b c"
 
 
+def test_a_browser_point_whose_before_crosses_a_block_break_lands_after_it() -> None:
+    # "Beta starts." occurs twice; only the second follows "Gamma.", which the browser
+    # reads with no space before it.
+    book = EpubMap.from_bytes(
+        build_epub(
+            {
+                "a.xhtml": xhtml_doc(
+                    "A",
+                    "<p>Intro.</p><p>Alpha.</p><p>Beta starts.</p><p>Gamma.</p><p>Beta starts.</p>",
+                )
+            }
+        )
+    )
+
+    match = locator_to_xpoint_range(book, browser_locator("Beta starts.Gamma.", "", "Beta starts."))
+
+    assert match.confidence is MatchConfidence.BOTH_CONTEXTS
+    assert match.xpoint_range.start.to_string() == "/body/DocFragment[1]/body/p[5]/text().0"
+
+
 def test_a_quote_absent_either_way_is_rejected_with_the_separated_texts_error(
     unindented_book: EpubMap,
 ) -> None:

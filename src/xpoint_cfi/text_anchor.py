@@ -239,13 +239,17 @@ def _anchor_point(
     The context is searched for across the whole text and only the resulting *point* is
     required to fall inside ``window`` — a point's context routinely reaches past the
     element the selector named.
+
+    A point is confirmed only by the context that did not place it. ``after`` abuts every
+    offset it was found at, so when ``before`` is not found it cannot vouch for those
+    offsets, and they are graded as one context rather than two.
     """
     lead = normalize_for_comparison(before)
     trail = normalize_for_comparison(after)
     if not lead and not trail:
         raise ResolutionError("<empty quote>", "no highlight and no context to anchor to")
 
-    candidates = _point_candidates(haystack, before, after, lead, trail)
+    candidates, placed_by_before = _point_candidates(haystack, before, after, lead, trail)
     low, high = window
     candidates = [index for index in candidates if low <= index <= high]
     if not candidates:
@@ -254,7 +258,11 @@ def _anchor_point(
     confirmed = [
         index
         for index in candidates
-        if (_trail_abuts(haystack[index:], trail) if lead else _lead_abuts(haystack[:index], lead))
+        if (
+            _trail_abuts(haystack[index:], trail)
+            if placed_by_before
+            else _lead_abuts(haystack[:index], lead)
+        )
     ]
     if confirmed:
         return QuoteMatch(source[confirmed[0]], source[confirmed[0]], MatchConfidence.BOTH_CONTEXTS)
@@ -262,8 +270,10 @@ def _anchor_point(
     return QuoteMatch(source[candidates[0]], source[candidates[0]], confidence)
 
 
-def _point_candidates(haystack: str, before: str, after: str, lead: str, trail: str) -> list[int]:
-    """Return every normalized offset a caret could sit at, most faithful first.
+def _point_candidates(
+    haystack: str, before: str, after: str, lead: str, trail: str
+) -> tuple[list[int], bool]:
+    """Return every normalized offset a caret could sit at, and whether ``before`` placed them.
 
     A caret's two contexts are slices of the resource text that meet exactly at it, so
     ``before``'s trailing whitespace — and ``after``'s leading whitespace — is what says
@@ -284,8 +294,8 @@ def _point_candidates(haystack: str, before: str, after: str, lead: str, trail: 
         for probe in (normalize_with_map(text)[0], stripped):
             found = _occurrences(haystack, probe, whole, len(probe))
             if found:
-                return [index + len(probe) for index in found] if at_end else found
-    return []
+                return ([index + len(probe) for index in found] if at_end else found), at_end
+    return [], True
 
 
 def _fuzzy_match(
