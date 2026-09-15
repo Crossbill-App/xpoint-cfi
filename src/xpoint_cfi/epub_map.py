@@ -229,7 +229,7 @@ class _TextIndex:
 
     locations: tuple[tuple[_Element, str, str], ...]
     cumulative: tuple[int, ...]
-    starts: dict[tuple[int, str], int]
+    starts: dict[tuple[_Element, str], int]
     full: str
 
 
@@ -238,8 +238,10 @@ class NodeMap:
 
     def __init__(self, root: _Element) -> None:
         self._root = root
-        self._chunk_cache: dict[int, tuple[Chunk, ...]] = {}
-        self._block_cache: dict[int, _Element] = {}
+        # Keyed by the element rather than its id: lxml frees an unreferenced element's proxy
+        # and can hand that id to another element's.
+        self._chunk_cache: dict[_Element, tuple[Chunk, ...]] = {}
+        self._block_cache: dict[_Element, _Element] = {}
         self._text_index: _TextIndex | None = None
 
     # -- element addressing ------------------------------------------------------------
@@ -373,7 +375,7 @@ class NodeMap:
         Comments and PIs do not open a new gap; their ``.tail`` text is appended to the
         current gap's text. Results are cached per element (the tree is immutable).
         """
-        cached = self._chunk_cache.get(id(elem))
+        cached = self._chunk_cache.get(elem)
         if cached is not None:
             return cached
 
@@ -403,7 +405,7 @@ class NodeMap:
         close_gap()
 
         chunks = tuple(result)
-        self._chunk_cache[id(elem)] = chunks
+        self._chunk_cache[elem] = chunks
         return chunks
 
     @staticmethod
@@ -566,7 +568,7 @@ class NodeMap:
                 locations=locations,
                 cumulative=tuple(cumulative),
                 starts={
-                    (id(node), attr): cum
+                    (node, attr): cum
                     for (node, attr, _), cum in zip(locations, cumulative, strict=True)
                 },
                 full="".join(pieces),
@@ -579,7 +581,7 @@ class NodeMap:
         Cached per element; falls back to the document element when no block tag is
         found (foreign or fully-inline markup).
         """
-        cached = self._block_cache.get(id(elem))
+        cached = self._block_cache.get(elem)
         if cached is not None:
             return cached
         node: _Element | None = elem
@@ -589,7 +591,7 @@ class NodeMap:
                 result = node
                 break
             node = node.getparent()
-        self._block_cache[id(elem)] = result
+        self._block_cache[elem] = result
         return result
 
     def _absolute_offset(self, position: tuple[_Element, int, int], index: _TextIndex) -> int:
@@ -602,28 +604,28 @@ class NodeMap:
             )
         if chunk.anchor is not None:
             node, attr = chunk.anchor
-            return index.starts[(id(node), attr)] + utf16_to_cp(chunk.text, utf16_offset)
+            return index.starts[(node, attr)] + utf16_to_cp(chunk.text, utf16_offset)
         return self._empty_gap_offset(elem, odd_index, index)
 
     def _empty_gap_offset(self, elem: _Element, odd_index: int, index: _TextIndex) -> int:
         children = element_children(elem)
         gap = (odd_index - 1) // 2
         if gap < len(children):
-            following = {id(node) for node in children[gap].iter()}
+            following = set(children[gap].iter())
             for i, (node, _, _) in enumerate(index.locations):
-                if id(node) in following:
+                if node in following:
                     return index.cumulative[i]
         if gap > 0:
-            preceding = {id(node) for node in children[gap - 1].iter()}
+            preceding = set(children[gap - 1].iter())
             last = -1
             for i, (node, _, _) in enumerate(index.locations):
-                if id(node) in preceding:
+                if node in preceding:
                     last = i
             if last >= 0:
                 return index.cumulative[last] + len(index.locations[last][2])
-        subtree = {id(node) for node in elem.iter()}
+        subtree = set(elem.iter())
         for i, (node, _, _) in enumerate(index.locations):
-            if id(node) in subtree:
+            if node in subtree:
                 return index.cumulative[i]
         return len(index.full)
 

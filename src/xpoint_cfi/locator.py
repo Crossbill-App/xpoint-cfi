@@ -342,10 +342,10 @@ def _common_ancestor(first: _Element, second: _Element) -> _Element:
     while node is not None:
         chain.append(node)
         node = node.getparent()
-    ancestors = {id(element) for element in chain}
+    ancestors = set(chain)
     node = second
     while node is not None:
-        if id(node) in ancestors:
+        if node in ancestors:
             return node
         node = node.getparent()
     return chain[-1]
@@ -502,12 +502,12 @@ def _scope_window(segments: tuple[_Segment, ...], scope: _Element) -> tuple[int,
     An empty subtree (an element holding no text at all) widens back to the whole
     resource: a selector that narrows to nothing is no better than no selector.
     """
-    inside = {id(element) for element in scope.iter()}
+    inside = set(scope.iter())
     position = 0
     low: int | None = None
     high = 0
     for segment in segments:
-        if segment.elem is not None and id(segment.elem) in inside:
+        if segment.elem is not None and segment.elem in inside:
             if low is None:
                 low = position
             high = position + len(segment.text)
@@ -539,17 +539,17 @@ def _segments(node: NodeMap, scope: _Element) -> tuple[_Segment, ...]:
     an offset into an extracted quote.
     """
     segments: list[_Segment] = []
-    countable: dict[int, frozenset[int]] = {}
+    countable: dict[_Element, frozenset[int]] = {}
     previous_block: _Element | None = None
     for elem, chunk in _iter_chunks(node, scope):
         block = node.block_ancestor(elem)
         if previous_block is not None and block is not previous_block:
             segments.append(_Segment(text="\n", elem=None, odd_index=0, addressable=False))
         previous_block = block
-        indices = countable.get(id(elem))
+        indices = countable.get(elem)
         if indices is None:
             indices = frozenset(c.odd_index for c in node.countable_chunks(elem))
-            countable[id(elem)] = indices
+            countable[elem] = indices
         segments.append(
             _Segment(
                 text=chunk.text,
